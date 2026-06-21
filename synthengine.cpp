@@ -54,41 +54,44 @@ void SynthEngine::setExpression(QString code) {
 
 qint64 SynthEngine::readData(char *data, qint64 maxlen) {
     QMutexLocker locker(&m_mutex);
-
-
     memset(data, 0, maxlen);
 
     int channels = m_format.channelCount();
     if (channels == 0) return maxlen;
 
-    if (m_format.sampleFormat() == QAudioFormat::Float) {
-        float *buffer = reinterpret_cast<float*>(data);
-        int frames = maxlen / (sizeof(float) * channels);
+    bool isFloat = (m_format.sampleFormat() == QAudioFormat::Float);
+    bool isInt16 = (m_format.sampleFormat() == QAudioFormat::Int16);
 
-        for (int i = 0; i < frames; ++i) {
-            float sample = 0.0f;
+    // If neither format is met, return silence
+    if (!isFloat && !isInt16) return maxlen;
 
-            if (m_isPlaying && m_oscillator) {
-                double t = (double)m_totalSamples / m_format.sampleRate();
+    int bytesPerSample = isFloat ? sizeof(float) : sizeof(qint16);
+    int frames = maxlen / (bytesPerSample * channels);
 
+    float *bufferF32 = reinterpret_cast<float*>(data);
+    qint16 *bufferI16 = reinterpret_cast<qint16*>(data);
 
-                if (m_totalSamples < 5) {
-                    qDebug() << "[AUDIO] Fetching sample for time:" << t;
-                }
+    for (int i = 0; i < frames; ++i) {
+        float sample = 0.0f;
 
-                sample = (float)m_oscillator(t) * 0.5f;
+        if (m_isPlaying && m_oscillator) {
+            double t = (double)m_totalSamples / m_format.sampleRate();
+            sample = (float)m_oscillator(t) * 0.5f;
 
-                if (std::isnan(sample) || std::isinf(sample)) sample = 0.0f;
-                m_totalSamples++;
-            }
+            if (std::isnan(sample) || std::isinf(sample)) sample = 0.0f;
+            m_totalSamples++;
+        }
 
-            for (int c = 0; c < channels; ++c) {
-                *buffer++ = sample;
+        for (int c = 0; c < channels; ++c) {
+            if (isFloat) {
+                *bufferF32++ = sample;
+            } else {
+                // Clamp and convert floating point to 16-bit integer for Android
+                float clamped = std::max(-1.0f, std::min(1.0f, sample));
+                *bufferI16++ = static_cast<qint16>(clamped * 32767.0f);
             }
         }
     }
-
-
     return maxlen;
 }
 

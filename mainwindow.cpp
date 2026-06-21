@@ -405,7 +405,6 @@ void MainWindow::onPlayClicked() {
     if (m_btnPlay->text().contains("Play")) {
         m_txtPreview->setText(generateMathExpression());
 
-
         struct LiveDrum { bool steps[16]={false}; double a,d,s,vol; int wType; double baseF; bool isK; };
         struct LiveMel { bool grid[96][16]={{false}}; double a,d,s,vol; int w1Type; };
 
@@ -429,11 +428,20 @@ void MainWindow::onPlayClicked() {
 
         double stepRate = (m_spinBpm->value() / 60.0) * 4.0;
 
-        m_synthEngine->setAudioSource([drums, synths, stepRate](double t) -> double {
+
+        std::vector<double> noteFreqs(96);
+        for(int key=0; key<96; ++key) {
+            noteFreqs[key] = 440.0 * std::pow(2.0, ((107 - key) - 69) / 12.0);
+        }
+
+
+        m_synthEngine->setAudioSource([drums, synths, stepRate, noteFreqs](double t) mutable -> double {
             int seqStep = (long)std::floor(t * stepRate) % 16;
             double lt = std::fmod(t, 1.0 / stepRate);
             double mix = 0.0;
 
+
+            static uint32_t rngSeed = 123456789;
 
             for(int r=0; r<6; ++r) {
                 if (drums[r].steps[seqStep]) {
@@ -445,14 +453,19 @@ void MainWindow::onPlayClicked() {
 
                     double osc = 0.0, phase = t * trk.baseF;
                     if (trk.isK) phase *= std::exp(-lt * 15.0);
+
                     if (trk.wType == 0) osc = std::sin(2.0 * M_PI * phase);
-                    else if (trk.wType == 1) osc = ((rand() % 2000) / 1000.0) - 1.0;
+                    else if (trk.wType == 1) {
+
+                        rngSeed = rngSeed * 1664525 + 1013904223;
+                        osc = (static_cast<float>(rngSeed) / 4294967296.0f) * 2.0f - 1.0f;
+                    }
                     else if (trk.wType == 2) osc = 2.0 * std::fmod(phase, 1.0) - 1.0;
                     else osc = (std::fmod(phase, 1.0) < 0.5) ? 1.0 : -1.0;
+
                     mix += osc * env * trk.vol;
                 }
             }
-
 
             for(int m=0; m<3; ++m) {
                 for(int key=0; key<96; ++key) {
@@ -463,11 +476,14 @@ void MainWindow::onPlayClicked() {
                         else if (lt < trk.a + trk.d && trk.d > 0.001) env = 1.0 - ((lt - trk.a) / trk.d) * (1.0 - trk.s);
                         else if (trk.a == 0 && trk.d == 0) env = 1.0;
 
-                        double freq = 440.0 * std::pow(2.0, ((107 - key) - 69) / 12.0);
+
+                        double freq = noteFreqs[key];
                         double osc = 0.0, phase = t * freq;
+
                         if (trk.w1Type == 0) osc = std::sin(2.0 * M_PI * phase);
                         else if (trk.w1Type == 2) osc = 2.0 * std::fmod(phase, 1.0) - 1.0;
                         else osc = (std::fmod(phase, 1.0) < 0.5) ? 1.0 : -1.0;
+
                         mix += osc * env * trk.vol;
                     }
                 }
