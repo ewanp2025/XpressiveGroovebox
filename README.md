@@ -1,6 +1,6 @@
 Aim is to make a compatible grid sequencer for mobile
 
-WIP
+WIP/n
 Debug running on Android Phone
 Step Sequencer Working
 Rendering Audio Each time press stop and start working (not live)
