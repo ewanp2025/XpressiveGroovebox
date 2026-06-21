@@ -89,11 +89,18 @@ void MelodicConfigDialog::saveToConfig(MelodicConfig& config) {
 
 PianoRollDialog::PianoRollDialog(MelodicConfig& config, QWidget *parent) : QDialog(parent) {
     setWindowTitle(config.name + " - Piano Roll");
-    resize(350, 600);
+
+
 
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(2, 2, 2, 2);
     mainLayout->setSpacing(2);
+
+
+    QPushButton* btnSave = new QPushButton("💾 Save Pattern & Close");
+    btnSave->setStyleSheet("background-color: #7a00cc; color: white; padding: 10px; font-weight: bold; border-radius: 4px;");
+    connect(btnSave, &QPushButton::clicked, this, &QDialog::accept);
+    mainLayout->addWidget(btnSave);
 
     QScrollArea* scrollArea = new QScrollArea();
     scrollArea->setWidgetResizable(true);
@@ -141,13 +148,10 @@ PianoRollDialog::PianoRollDialog(MelodicConfig& config, QWidget *parent) : QDial
     scrollArea->setWidget(gridWidget);
     mainLayout->addWidget(scrollArea);
 
-    QPushButton* btnSave = new QPushButton("Save Pattern & Close");
-    btnSave->setStyleSheet("background-color: #7a00cc; color: white; padding: 10px; font-weight: bold; border-radius: 4px;");
-    connect(btnSave, &QPushButton::clicked, this, &QDialog::accept);
-    mainLayout->addWidget(btnSave);
-
     setStyleSheet("QDialog { background-color: #1e1e1e; }");
 
+
+    setWindowState(Qt::WindowMaximized);
 
     QTimer::singleShot(50, [scrollArea, gridWidget]() {
         int targetY = (47 * 32) - (scrollArea->viewport()->height() / 2);
@@ -249,6 +253,8 @@ void MainWindow::setupUI() {
     QGridLayout* gridLayout = new QGridLayout(gridContainer);
     gridLayout->setSpacing(1);
     gridLayout->setContentsMargins(0, 0, 0, 0);
+
+    gridLayout->setAlignment(Qt::AlignLeft);
 
     for (int r = 0; r < NUM_CHANNELS; ++r) {
         QPushButton* btnCfg = new QPushButton("⚙️" + m_channels[r].name);
