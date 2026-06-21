@@ -1,0 +1,46 @@
+#ifndef SYNTHENGINE_H
+#define SYNTHENGINE_H
+
+#include <QIODevice>
+#include <QAudioSink>
+#include <QMediaDevices>
+#include <QAudioDevice>
+#include <QMutex>
+#include <cmath>
+#include <functional>
+#include <QString>
+
+class SynthEngine : public QIODevice {
+    Q_OBJECT
+
+public:
+    explicit SynthEngine(QObject *parent = nullptr);
+    ~SynthEngine();
+
+    void start();
+    void stop();
+    void setAudioSource(std::function<double(double)> func);
+
+    bool isSequential() const override;
+    qint64 bytesAvailable() const override;
+
+public slots:
+    void setExpression(QString code);
+
+protected:
+    qint64 readData(char *data, qint64 maxlen) override;
+    qint64 writeData(const char *data, qint64 len) override;
+
+private:
+    QAudioSink *m_audioSink = nullptr;
+    QAudioFormat m_format;
+    std::function<double(double)> m_oscillator = [](double){ return 0.0; };
+
+    QMutex m_mutex;
+    double m_sampleRate = 44100.0;
+    qint64 m_totalSamples = 0;
+    QString m_currentCode;
+    bool m_isPlaying = false;
+};
+
+#endif // SYNTHENGINE_H

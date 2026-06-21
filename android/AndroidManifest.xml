@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<manifest package="com.xpressive.groovebox" 
+          xmlns:android="http://schemas.android.com/apk/res/android" 
+          android:versionCode="1" 
+          android:versionName="1.0.0">
+          
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    
+    <application android:icon="@drawable/icon" android:label="Groovebox" android:hardwareAccelerated="true">
+        
+        <activity android:name="org.qtproject.qt.android.bindings.QtActivity"
+                  android:label="Groovebox"
+                  android:screenOrientation="landscape"
+                  android:exported="true">
+            
+            <meta-data android:name="android.app.lib_name" 
+                       android:value="XpressiveGroovebox" />
+            
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            
+        </activity>
+        
+    </application>
+</manifest>
