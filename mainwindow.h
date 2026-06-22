@@ -16,6 +16,7 @@
 #include "instrument.h"
 #include "effect.h"
 #include "pianoroll.h"
+#include "automation.h"
 
 class SynthEngine;
 
@@ -27,10 +28,14 @@ struct PlaybackState {
     double bpm = 120.0;
 
     struct DrumLive { double a, d, s, vol, baseF; int wType; bool isK; };
-    struct SynthLive { double a, d, s, vol; int w1Type; bool useAdsr; };
+    struct SynthLive { double a, d, s, r, vol; int w1Type; bool useAdsr; };
 
     DrumLive drums[6];
     SynthLive synths[3];
+
+    struct AutoLive { double steps[16]; AutoTarget target; };
+    AutoLive automations[4]; // Let's support up to 4 automation tracks for now
+
 };
 
 class MainWindow : public QMainWindow {
@@ -79,8 +84,11 @@ private:
     int m_arrangerState[4][8] = {{0}};
     PlaybackState m_playState;
 
-    // NEW: Master Effects Chain
+
     DummyDriveEffect m_masterEffect;
+
+    AutomationTrack m_autoTracks[4];
+    AutomationGrid* m_autoGrids[4];
 };
 
 #endif // MAINWINDOW_H

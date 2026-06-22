@@ -170,6 +170,32 @@ void MainWindow::setupUI() {
     middleLayout->addWidget(arrangerBox);
     mainLayout->addLayout(middleLayout);
 
+
+    QGroupBox* autoBox = new QGroupBox("Step Automations (Macros)");
+    autoBox->setStyleSheet("QGroupBox::title { color: #00ff88; }");
+    QVBoxLayout* autoLayout = new QVBoxLayout(autoBox);
+    
+    m_autoTracks[0].name = "Master Drive";
+    m_autoTracks[0].target = AutoTarget::MasterDrive;
+
+    m_autoTracks[1].name = "Master Volume";
+    m_autoTracks[1].target = AutoTarget::MasterVolume;
+
+    for (int i = 0; i < 2; ++i) { 
+        QHBoxLayout* row = new QHBoxLayout();
+        QLabel* lbl = new QLabel("<b>" + m_autoTracks[i].name + "</b>");
+        lbl->setFixedWidth(80);
+        
+        m_autoGrids[i] = new AutomationGrid(m_autoTracks[i], this);
+        connect(m_autoGrids[i], &AutomationGrid::automationChanged, this, &MainWindow::updatePlaybackState);
+        
+        row->addWidget(lbl);
+        row->addWidget(m_autoGrids[i]);
+        autoLayout->addLayout(row);
+    }
+    mainLayout->addWidget(autoBox);
+
+
     QGroupBox* melodicBox = new QGroupBox("Melodic Synths");
     melodicBox->setStyleSheet("QGroupBox::title { color: #cc55ff; }");
     QVBoxLayout* melodicLayout = new QVBoxLayout(melodicBox);
@@ -254,6 +280,7 @@ void MainWindow::updatePlaybackState() {
         m_playState.synths[m].a = m_melodic[m].attack;
         m_playState.synths[m].d = m_melodic[m].decay;
         m_playState.synths[m].s = m_melodic[m].sustain;
+        m_playState.synths[m].r = m_melodic[m].release;
         m_playState.synths[m].vol = m_melodic[m].vol;
         m_playState.synths[m].useAdsr = m_melodic[m].useAdsr;
         QString w1 = m_melodic[m].w1.toLower();
@@ -273,6 +300,14 @@ void MainWindow::updatePlaybackState() {
             m_playState.arranger[t][b] = m_arrangerState[t][b];
         }
     }
+
+for (int i = 0; i < 4; ++i) {
+        m_playState.automations[i].target = m_autoTracks[i].target;
+        for (int step = 0; step < 16; ++step) {
+            m_playState.automations[i].steps[step] = m_autoTracks[i].steps[step];
+        }
+    }
+
 }
 
 void MainWindow::onConfigClicked(int index) {
@@ -349,35 +384,98 @@ void MainWindow::onPlayClicked() {
                 }
             }
 
-            for(int m=0; m<3; ++m) {
+for(int m = 0; m < 3; ++m) {
                 int patIdx = m_playState.arranger[m+1][currentBar];
                 if (patIdx > 0) {
                     int p = patIdx - 1;
-                    for(int key=0; key<96; ++key) {
-                        if (m_playState.synthGrid[m][p][key][seqStep].active) {
-                            const auto& trk = m_playState.synths[m];
-                            
+                    const auto& trk = m_playState.synths[m];
+                    
+                    for(int key = 0; key < 96; ++key) {
+                        
+
+                        bool activeThisStep = false;
+                        double noteTime = 0.0;
+                        int noteLenSteps = 0;
+
+                        for (int c = 0; c <= seqStep; ++c) {
+                            if (m_playState.synthGrid[m][p][key][c].active) {
+
+                                if (c + m_playState.synthGrid[m][p][key][c].length > seqStep) {
+                                    activeThisStep = true;
+
+                                    noteTime = ((seqStep - c) / stepRate) + lt; 
+                                    noteLenSteps = m_playState.synthGrid[m][p][key][c].length;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (activeThisStep) {
+                            double noteDur = noteLenSteps / stepRate;
                             double env = 1.0;
+                            
+
                             if (trk.useAdsr) {
                                 env = trk.s;
-                                if (lt < trk.a && trk.a > 0.001) env = lt / trk.a;
-                                else if (lt < trk.a + trk.d && trk.d > 0.001) env = 1.0 - ((lt - trk.a) / trk.d) * (1.0 - trk.s);
-                                else if (trk.a == 0 && trk.d == 0) env = 1.0;
+                                
+
+                                if (noteTime < trk.a && trk.a > 0.001) {
+                                    env = noteTime / trk.a;
+                                } else if (noteTime < trk.a + trk.d && trk.d > 0.001) {
+                                    env = 1.0 - ((noteTime - trk.a) / trk.d) * (1.0 - trk.s);
+                                }
+                                
+
+                                if (noteTime >= noteDur) {
+                                    double releaseTime = noteTime - noteDur;
+                                    if (releaseTime < trk.r && trk.r > 0.001) {
+
+                                        env = env * (1.0 - (releaseTime / trk.r)); 
+                                    } else {
+                                        env = 0.0;
+                                    }
+                                }
                             }
 
-                            double freq = noteFreqs[key];
-                            double osc = 0.0, phase = t * freq;
+                            if (env > 0.0001) {
+                                double freq = noteFreqs[key];
+                                double osc = 0.0, phase = t * freq;
 
-                            if (trk.w1Type == 0) osc = std::sin(2.0 * M_PI * phase);
-                            else if (trk.w1Type == 2) osc = 2.0 * std::fmod(phase, 1.0) - 1.0;
-                            else osc = (std::fmod(phase, 1.0) < 0.5) ? 1.0 : -1.0;
+                                if (trk.w1Type == 0) osc = std::sin(2.0 * M_PI * phase);
+                                else if (trk.w1Type == 2) osc = 2.0 * std::fmod(phase, 1.0) - 1.0;
+                                else osc = (std::fmod(phase, 1.0) < 0.5) ? 1.0 : -1.0;
 
-                            mix += osc * env * trk.vol;
+                                mix += osc * env * trk.vol;
+                            }
                         }
                     }
+}
+            }
+            
+            double finalMix = std::max(-1.0, std::min(mix, 1.0));
+            
+
+            double currentMasterVol = 1.0;
+            double currentDrive = 1.0;
+
+            for (int i = 0; i < 4; ++i) {
+                double autoVal = m_playState.automations[i].steps[seqStep];
+                
+
+                if (m_playState.automations[i].target == AutoTarget::MasterVolume) {
+                    currentMasterVol = autoVal * 2.0;
+                } 
+                else if (m_playState.automations[i].target == AutoTarget::MasterDrive) {
+                    currentDrive = 1.0 + (autoVal * 9.0);
                 }
             }
-            double finalMix = std::max(-1.0, std::min(mix, 1.0));
+
+
+            finalMix *= currentMasterVol;
+
+
+            m_masterEffect.setParameter(0, currentDrive); 
+            
             return m_masterEffect.process(finalMix);
         });
 
