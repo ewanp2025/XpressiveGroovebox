@@ -4,16 +4,19 @@ WIP
 
 Debug running on Android Phone
 
-Step Sequencer Working
+Step Sequencer Working - needs proper piano roll.
 
-Rendering Audio Each time press stop and start working (not live)
+Generating Live Audio
 
-Audio out working (must confirm how close to LMMS)
+Playing Precompiled Expression
+
+Saving Data
 
 GUI is very laggy on Android
 
-Export .mmp is saving parsed file, but is not loading in LMMS
+ADSR not implemented
 
-Chords / piano roll working
+Effects not implemented
+
 
 WIP
