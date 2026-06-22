@@ -57,8 +57,8 @@ class VarNode : public Node { std::string name; public: VarNode(std::string n):n
 class UnaryNode : public Node { std::unique_ptr<Node> n; std::function<double(double)> op; public: UnaryNode(std::unique_ptr<Node> n, std::function<double(double)> op):n(std::move(n)),op(op){} double eval(Env& e) override { return op(n->eval(e)); } };
 class FuncNode : public Node { std::unique_ptr<Node> n; std::function<double(double)> op; public: FuncNode(std::unique_ptr<Node> n, std::function<double(double)> op):n(std::move(n)),op(op){} double eval(Env& e) override { return op(n->eval(e)); } };
 class BinFuncNode : public Node { std::unique_ptr<Node> l,r; std::function<double(double,double)> op; public: BinFuncNode(std::unique_ptr<Node> l, std::unique_ptr<Node> r, std::function<double(double,double)> op):l(std::move(l)),r(std::move(r)),op(op){} double eval(Env& e) override { return op(l->eval(e), r->eval(e)); } };
+class TernaryFuncNode : public Node { std::unique_ptr<Node> a,b,c; std::function<double(double,double,double)> op; public: TernaryFuncNode(std::unique_ptr<Node> a, std::unique_ptr<Node> b, std::unique_ptr<Node> c, std::function<double(double,double,double)> op):a(std::move(a)),b(std::move(b)),c(std::move(c)),op(op){} double eval(Env& e) override { return op(a->eval(e), b->eval(e), c->eval(e)); } };
 class BinOpNode : public Node { std::unique_ptr<Node> l,r; Token op; public: BinOpNode(std::unique_ptr<Node> l, std::unique_ptr<Node> r, Token op):l(std::move(l)),r(std::move(r)),op(op){} double eval(Env& e) override { double a=l->eval(e), b=r->eval(e); switch(op){ case TOK_PLUS: return a+b; case TOK_MINUS: return a-b; case TOK_MUL: return a*b; case TOK_DIV: return b==0?0:a/b; case TOK_EQ: return a==b?1:0; case TOK_NEQ: return a!=b?1:0; case TOK_LT: return a<b?1:0; case TOK_GT: return a>b?1:0; case TOK_LTE: return a<=b?1:0; case TOK_GTE: return a>=b?1:0; case TOK_OR: return (a!=0||b!=0)?1:0; case TOK_AND: return (a!=0&&b!=0)?1:0; default: return 0; } } };
-
 
 class IntegrateNode : public Node { std::unique_ptr<Node> n; double accum=0; public: IntegrateNode(std::unique_ptr<Node> n):n(std::move(n)){} double eval(Env& e) override { accum += n->eval(e) / e.srate; return accum; } };
 
@@ -69,18 +69,40 @@ std::unique_ptr<Node> parsePrimary(Lexer& lex) {
         std::string id = lex.idStr; lex.next();
         if (id == "t" || id == "tempo" || id == "srate" || id == "f") return std::make_unique<VarNode>(id);
         if (lex.curTok == TOK_LPAREN) {
-            lex.next(); auto a1 = parseExpr(lex); std::unique_ptr<Node> a2;
+            lex.next(); auto a1 = parseExpr(lex);
+
+            if (id == "clamp") {
+                if (lex.curTok != TOK_COMMA) throw std::runtime_error("Expected ',' in clamp");
+                lex.next(); auto a2 = parseExpr(lex);
+                if (lex.curTok != TOK_COMMA) throw std::runtime_error("Expected ',' in clamp");
+                lex.next(); auto a3 = parseExpr(lex);
+                if (lex.curTok != TOK_RPAREN) throw std::runtime_error("Expected ')' in clamp");
+                lex.next();
+                return std::make_unique<TernaryFuncNode>(std::move(a1), std::move(a2), std::move(a3), [](double mn, double v, double mx){ return std::max(mn, std::min(v, mx)); });
+            }
+
+            std::unique_ptr<Node> a2;
             if (lex.curTok == TOK_COMMA) { lex.next(); a2 = parseExpr(lex); }
             if (lex.curTok != TOK_RPAREN) throw std::runtime_error("Expected ')'");
             lex.next();
+
             if (id == "mod") return std::make_unique<BinFuncNode>(std::move(a1), std::move(a2), [](double a, double b){ return b==0?0:std::fmod(a,b); });
             if (id == "sinew") return std::make_unique<FuncNode>(std::move(a1), [](double x){ return std::sin(2.0*M_PI*x); });
-            if (id == "saww") return std::make_unique<FuncNode>(std::move(a1), [](double x){ return 2.0*std::fmod(x,1.0)-1.0; });
-            if (id == "squarew") return std::make_unique<FuncNode>(std::move(a1), [](double x){ return std::fmod(x,1.0)<0.5?1.0:-1.0; });
+            if (id == "saww") return std::make_unique<FuncNode>(std::move(a1), [](double x){ double p=x-std::floor(x); return 2.0*p-1.0; });
+            if (id == "squarew") return std::make_unique<FuncNode>(std::move(a1), [](double x){ double p=x-std::floor(x); return p<0.5?1.0:-1.0; });
             if (id == "exp") return std::make_unique<FuncNode>(std::move(a1), [](double x){ return std::exp(x); });
             if (id == "floor") return std::make_unique<FuncNode>(std::move(a1), [](double x){ return std::floor(x); });
             if (id == "randv") return std::make_unique<FuncNode>(std::move(a1), [](double){ return (static_cast<double>(rand())/RAND_MAX)*2.0-1.0; });
             if (id == "integrate") return std::make_unique<IntegrateNode>(std::move(a1));
+
+            if (id == "W1") return std::make_unique<FuncNode>(std::move(a1), [](double x){
+                    double p1 = x - std::floor(x);
+                    double p2 = (x*2.0) - std::floor(x*2.0);
+                    return std::max(-1.0, std::min((2.0*p1-1.0) + 0.5*(p2<0.5?1.0:-1.0), 1.0));
+                });
+            if (id == "W2") return std::make_unique<FuncNode>(std::move(a1), [](double x){
+                    return 0.3 * std::sin(2.0*M_PI*x*0.5);
+                });
         }
         throw std::runtime_error("Unknown function: " + id);
     }
@@ -96,6 +118,7 @@ std::unique_ptr<Node> parseAnd(Lexer& lex) { auto l=parseEq(lex); while(lex.curT
 std::unique_ptr<Node> parseExpr(Lexer& lex) { auto l=parseAnd(lex); while(lex.curTok==TOK_OR){ lex.next(); l=std::make_unique<BinOpNode>(std::move(l), parseAnd(lex), TOK_OR); } return l; }
 std::unique_ptr<Node> parse(const std::string& str) { Lexer lex(str.c_str()); return parseExpr(lex); }
 }
+
 
 
 ChannelConfigDialog::ChannelConfigDialog(ChannelConfig& config, QWidget *parent) : QDialog(parent) {
@@ -309,12 +332,11 @@ void MainWindow::setupUI() {
     m_btnPlay = new QPushButton("▶ Play Sequence");
     m_btnPlay->setStyleSheet("background-color: #005577; color: white; padding: 5px 15px;");
 
-
     m_txtTestString = new QLineEdit();
     m_txtTestString->setPlaceholderText("Paste Custom Formula Here...");
-    m_txtTestString->setText("sinew(integrate(60*(1+2*exp(-mod(t,15/tempo)*100)))) * exp(-mod(t,15/tempo)*15) * (mod(floor(mod(t*(tempo/15),16)),4)==0) * (floor(mod(t*(tempo/15),256))<128 | floor(mod(t*(tempo/15),256))>=192) + (sinew(integrate(200))*exp(-mod(t,15/tempo)*50) + 0.6*randv(t*srate)*exp(-mod(t,15/tempo)*30)) * ((floor(mod(t*(tempo/15),16))==4 | floor(mod(t*(tempo/15),16))==12) * (floor(mod(t*(tempo/15),256))<128 | floor(mod(t*(tempo/15),256))>=160) | (floor(mod(t*(tempo/15),256))>=176 & floor(mod(t*(tempo/15),256))<192)) + 0.15*randv(t*srate)*exp(-mod(t,15/tempo)*40) + 0.3*randv(t*srate)*exp(-mod(t,15/tempo)*15) * (floor(mod(t*(tempo/15),16))==2 | floor(mod(t*(tempo/15),16))==6 | floor(mod(t*(tempo/15),16))==10 | floor(mod(t*(tempo/15),16))==14)");
+    m_txtTestString->setText("clamp(-1, 0.15 * ( ((mod(t*(tempo/30),16)>=0 & mod(t*(tempo/30),16)<1)*exp(-mod(t*(tempo/30),16)*4) + (mod(t*(tempo/30),16)>=1.5 & mod(t*(tempo/30),16)<2.5)*exp(-(mod(t*(tempo/30),16)-1.5)*4) + (mod(t*(tempo/30),16)>=2.5 & mod(t*(tempo/30),16)<3.5)*exp(-(mod(t*(tempo/30),16)-2.5)*4) + (mod(t*(tempo/30),16)>=8 & mod(t*(tempo/30),16)<9)*exp(-(mod(t*(tempo/30),16)-8)*4) + (mod(t*(tempo/30),16)>=9.5 & mod(t*(tempo/30),16)<10.5)*exp(-(mod(t*(tempo/30),16)-9.5)*4) + (mod(t*(tempo/30),16)>=10.5 & mod(t*(tempo/30),16)<11)*exp(-(mod(t*(tempo/30),16)-10.5)*4)) * (W1(integrate(174.61))+W1(integrate(207.65))+W1(integrate(261.63))+W1(integrate(311.13))+W1(integrate(392.00))) + ((mod(t*(tempo/30),16)>=3.5 & mod(t*(tempo/30),16)<4.5)*exp(-(mod(t*(tempo/30),16)-3.5)*4) + (mod(t*(tempo/30),16)>=5 & mod(t*(tempo/30),16)<6)*exp(-(mod(t*(tempo/30),16)-5)*4) + (mod(t*(tempo/30),16)>=6.5 & mod(t*(tempo/30),16)<7.5)*exp(-(mod(t*(tempo/30),16)-6.5)*4)) * (W1(integrate(207.65))+W1(integrate(261.63))+W1(integrate(311.13))+W1(integrate(349.23))+W1(integrate(392.00))) + ((mod(t*(tempo/30),16)>=11.5 & mod(t*(tempo/30),16)<12.5)*exp(-(mod(t*(tempo/30),16)-11.5)*4) + (mod(t*(tempo/30),16)>=14 & mod(t*(tempo/30),16)<15)*exp(-(mod(t*(tempo/30),16)-14)*4) + 0.7*(mod(t*(tempo/30),16)>=15 & mod(t*(tempo/30),16)<16)*exp(-(mod(t*(tempo/30),16)-15)*4)) * (W1(integrate(155.56))+W1(integrate(207.65))+W1(integrate(233.08))+W1(integrate(277.18))+W1(integrate(349.23))+W1(integrate(415.30))) + 0.8*((mod(t*(tempo/30),16)>=12.5 & mod(t*(tempo/30),16)<13.5)*exp(-(mod(t*(tempo/30),16)-12.5)*4)) * (W1(integrate(155.56))+W1(integrate(207.65))+W1(integrate(233.08))+W1(integrate(277.18))+W1(integrate(349.23))) + 0.8*((mod(t*(tempo/30),16)>=13 & mod(t*(tempo/30),16)<14)*exp(-(mod(t*(tempo/30),16)-13)*4)) * W1(integrate(415.30)) ), 1)");
 
-    m_btnTestString = new QPushButton("🧪 Test A-4");
+    m_btnTestString = new QPushButton("🧪 Test Expr");
     m_btnTestString->setStyleSheet("background-color: #5500aa; color: white; padding: 5px 15px;");
 
     m_btnImport = new QPushButton("📂 Import");
@@ -393,7 +415,6 @@ void MainWindow::setupUI() {
             arrangerLayout->addWidget(m_arrangerGrid[row][bar], row, bar + 1);
         }
     }
-
     onArrangerClicked(0, 0); onArrangerClicked(1, 0); onArrangerClicked(2, 0); onArrangerClicked(3, 0);
 
     middleLayout->addWidget(arrangerBox);
@@ -603,7 +624,7 @@ QString MainWindow::generateMathExpression() {
 
 void MainWindow::onPlayClicked() {
     if (m_btnPlay->text().contains("Play")) {
-        if (m_btnTestString->text().contains("Stop")) onTestStringClicked(); // Shut down tester if running
+        if (m_btnTestString->text().contains("Stop")) onTestStringClicked();
 
         std::vector<double> noteFreqs(96);
         for(int key=0; key<96; ++key) noteFreqs[key] = 440.0 * std::pow(2.0, ((107 - key) - 69) / 12.0);
@@ -689,11 +710,10 @@ void MainWindow::onPlayClicked() {
     }
 }
 
-
 void MainWindow::onTestStringClicked() {
     if (m_btnTestString->text().contains("Stop")) {
         m_synthEngine->stop();
-        m_btnTestString->setText("🧪 Test A-4");
+        m_btnTestString->setText("🧪 Test Expr");
         m_btnPlay->setEnabled(true);
         return;
     }
@@ -726,6 +746,7 @@ void MainWindow::onTestStringClicked() {
     }
 }
 
+
 void MainWindow::onImportMmpClicked() {
     QString filePath = QFileDialog::getOpenFileName(this, "Open LMMS Project", "", "LMMS Project (*.mmp)");
     if (filePath.isEmpty()) return;
@@ -737,80 +758,127 @@ void MainWindow::onImportMmpClicked() {
     if (!doc.setContent(&file)) { QMessageBox::warning(this, "Parse Error", "Failed to parse .mmp file format."); return; }
 
     QDomElement root = doc.documentElement();
-    QDomElement song = root.firstChildElement("song");
-    m_spinBpm->setValue(song.attribute("bpm", "120").toInt());
 
+    QDomElement head = root.firstChildElement("head");
+    m_spinBpm->setValue(head.attribute("bpm", "120").toInt());
+
+    // Clear state
     for (int r = 0; r < NUM_CHANNELS; ++r) { for (int c = 0; c < NUM_STEPS; ++c) m_grid[r][c]->setChecked(false); }
     for (int t = 0; t < 4; ++t) {
         for (int b = 0; b < 8; ++b) {
             m_arrangerState[t][b] = 0;
-            if(t > 0) { for (int k = 0; k < 96; ++k) { for (int c = 0; c < NUM_STEPS; ++c) m_melodic[t-1].grid[b][k][c] = false; } }
+            if (t > 0) {
+                for (int k = 0; k < 96; ++k) { for (int c = 0; c < NUM_STEPS; ++c) m_melodic[t-1].grid[b][k][c] = false; }
+            }
         }
     }
 
-    QDomNodeList tracks = song.elementsByTagName("track");
-    for (int i = 0; i < tracks.size(); ++i) {
-        QDomElement track = tracks.at(i).toElement();
-        QString name = track.attribute("name");
+    QDomElement song = root.firstChildElement("song");
+    QDomElement trackContainer = song.firstChildElement("trackcontainer");
 
-        int dIdx = -1; for(int r=0; r<NUM_CHANNELS; ++r) if(m_channels[r].name == name) dIdx = r;
-        int mIdx = -1; for(int m=0; m<NUM_MELODIC; ++m) if(m_melodic[m].name == name) mIdx = m;
 
-        QDomElement xpressive = track.firstChildElement("instrumenttrack").firstChildElement("instrument").firstChildElement("xpressive");
-        if (xpressive.isNull()) xpressive = track.firstChildElement("instrumenttrack").firstChildElement("instrument").firstChildElement("Xpressive");
+    QDomNode n = trackContainer.firstChild();
+    while (!n.isNull()) {
+        QDomElement e = n.toElement();
+        if (!e.isNull() && e.tagName() == "track") {
 
-        if (dIdx != -1) {
-            if (!xpressive.isNull()) {
-                m_channels[dIdx].w1 = xpressive.hasAttribute("W1") ? xpressive.attribute("W1") : xpressive.attribute("w1");
-                m_channels[dIdx].o1 = xpressive.hasAttribute("O1") ? xpressive.attribute("O1") : xpressive.attribute("o1");
-                m_channels[dIdx].attack = xpressive.attribute("env_atk").toDouble();
-                m_channels[dIdx].decay = xpressive.attribute("env_dec").toDouble();
-                m_channels[dIdx].sustain = xpressive.attribute("env_sus").toDouble();
-                m_channels[dIdx].release = xpressive.attribute("env_rel").toDouble();
-            }
+            if (e.attribute("type") == "1") {
+                QDomNodeList bbtcos = e.elementsByTagName("bbtco");
+                for (int i=0; i<bbtcos.size(); ++i) {
+                    int bar = bbtcos.at(i).toElement().attribute("pos").toInt() / 192;
+                    if (bar >= 0 && bar < 8) m_arrangerState[0][bar] = 1;
+                }
 
-            QDomNodeList patterns = track.elementsByTagName("pattern");
-            for (int p = 0; p < patterns.size(); ++p) {
-                QDomElement pat = patterns.at(p).toElement();
-                int bar = pat.attribute("pos").toInt() / (16 * 48);
-                if (bar >= 0 && bar < 8) {
-                    m_arrangerState[0][bar] = 1;
-                    QDomNodeList notes = pat.elementsByTagName("note");
-                    for (int n = 0; n < notes.size(); ++n) {
-                        int step = notes.at(n).toElement().attribute("pos").toInt() / 48;
-                        if (step >= 0 && step < NUM_STEPS) m_grid[dIdx][step]->setChecked(true);
+                QDomElement bbTc = e.firstChildElement("bbtrack").firstChildElement("trackcontainer");
+                QDomNodeList bbTracks = bbTc.elementsByTagName("track");
+                for (int i=0; i<bbTracks.size(); ++i) {
+                    QDomElement t = bbTracks.at(i).toElement();
+                    QString name = t.attribute("name");
+                    int dIdx = -1;
+                    for(int r=0; r<NUM_CHANNELS; ++r) if(m_channels[r].name == name) dIdx = r;
+
+                    if (dIdx != -1) {
+                        QDomElement instTrack = t.firstChildElement("instrumenttrack");
+                        QDomElement xpressive = instTrack.firstChildElement("instrument").firstChildElement("xpressive");
+                        if (xpressive.isNull()) xpressive = instTrack.firstChildElement("instrument").firstChildElement("Xpressive");
+                        if (!xpressive.isNull()) {
+                            m_channels[dIdx].w1 = xpressive.hasAttribute("W1") ? xpressive.attribute("W1") : xpressive.attribute("w1");
+                            m_channels[dIdx].o1 = xpressive.hasAttribute("O1") ? xpressive.attribute("O1") : xpressive.attribute("o1");
+                            m_channels[dIdx].attack = xpressive.attribute("env_atk").toDouble();
+                            m_channels[dIdx].decay = xpressive.attribute("env_dec").toDouble();
+                            m_channels[dIdx].sustain = xpressive.attribute("env_sus").toDouble();
+                            m_channels[dIdx].release = xpressive.attribute("env_rel").toDouble();
+                        }
+                        QDomElement elvol = instTrack.firstChildElement("eldata").firstChildElement("elvol");
+                        if (!elvol.isNull()) {
+                            m_channels[dIdx].attack = elvol.attribute("att", QString::number(m_channels[dIdx].attack)).toDouble();
+                            m_channels[dIdx].decay = elvol.attribute("dec", QString::number(m_channels[dIdx].decay)).toDouble();
+                            m_channels[dIdx].sustain = elvol.attribute("sustain", QString::number(m_channels[dIdx].sustain)).toDouble();
+                            m_channels[dIdx].release = elvol.attribute("rel", QString::number(m_channels[dIdx].release)).toDouble();
+                        }
+
+                        QDomElement pat = t.firstChildElement("pattern");
+                        if (!pat.isNull()) {
+                            QDomNodeList notes = pat.elementsByTagName("note");
+                            for (int nIdx=0; nIdx<notes.size(); ++nIdx) {
+                                int step = notes.at(nIdx).toElement().attribute("pos").toInt() / 12;
+                                if (step >= 0 && step < NUM_STEPS) m_grid[dIdx][step]->setChecked(true);
+                            }
+                        }
                     }
                 }
             }
-        }
-        else if (mIdx != -1) {
-            if (!xpressive.isNull()) {
-                m_melodic[mIdx].w1 = xpressive.hasAttribute("W1") ? xpressive.attribute("W1") : xpressive.attribute("w1");
-                m_melodic[mIdx].w2 = xpressive.hasAttribute("W2") ? xpressive.attribute("W2") : xpressive.attribute("w2");
-                m_melodic[mIdx].o1 = xpressive.hasAttribute("O1") ? xpressive.attribute("O1") : xpressive.attribute("o1");
-                m_melodic[mIdx].attack = xpressive.attribute("env_atk").toDouble();
-                m_melodic[mIdx].decay = xpressive.attribute("env_dec").toDouble();
-                m_melodic[mIdx].sustain = xpressive.attribute("env_sus").toDouble();
-                m_melodic[mIdx].release = xpressive.attribute("env_rel").toDouble();
-            }
 
-            QDomNodeList patterns = track.elementsByTagName("pattern");
-            for (int p = 0; p < patterns.size(); ++p) {
-                QDomElement pat = patterns.at(p).toElement();
-                int bar = pat.attribute("pos").toInt() / (16 * 48);
-                if (bar >= 0 && bar < 8) {
-                    m_arrangerState[mIdx+1][bar] = bar + 1;
-                    QDomNodeList notes = pat.elementsByTagName("note");
-                    for (int n = 0; n < notes.size(); ++n) {
-                        int step = notes.at(n).toElement().attribute("pos").toInt() / 48;
-                        int key = 107 - notes.at(n).toElement().attribute("key").toInt();
-                        if (step >= 0 && step < NUM_STEPS && key >= 0 && key < 96) {
-                            m_melodic[mIdx].grid[bar][key][step] = true;
+
+            else if (e.attribute("type") == "0") {
+                QString name = e.attribute("name");
+                int mIdx = -1; for(int m=0; m<NUM_MELODIC; ++m) if(m_melodic[m].name == name) mIdx = m;
+
+                if (mIdx != -1) {
+                    QDomElement instTrack = e.firstChildElement("instrumenttrack");
+                    QDomElement xpressive = instTrack.firstChildElement("instrument").firstChildElement("xpressive");
+                    if (xpressive.isNull()) xpressive = instTrack.firstChildElement("instrument").firstChildElement("Xpressive");
+
+                    if (!xpressive.isNull()) {
+                        m_melodic[mIdx].w1 = xpressive.hasAttribute("W1") ? xpressive.attribute("W1") : xpressive.attribute("w1");
+                        m_melodic[mIdx].w2 = xpressive.hasAttribute("W2") ? xpressive.attribute("W2") : xpressive.attribute("w2");
+                        m_melodic[mIdx].o1 = xpressive.hasAttribute("O1") ? xpressive.attribute("O1") : xpressive.attribute("o1");
+
+                        m_melodic[mIdx].attack = xpressive.attribute("env_atk").toDouble();
+                        m_melodic[mIdx].decay = xpressive.attribute("env_dec").toDouble();
+                        m_melodic[mIdx].sustain = xpressive.attribute("env_sus").toDouble();
+                        m_melodic[mIdx].release = xpressive.attribute("env_rel").toDouble();
+                    }
+
+                    QDomElement eldata = instTrack.firstChildElement("eldata");
+                    QDomElement elvol = eldata.firstChildElement("elvol");
+                    if (!elvol.isNull()) {
+                        m_melodic[mIdx].attack = elvol.attribute("att", QString::number(m_melodic[mIdx].attack)).toDouble();
+                        m_melodic[mIdx].decay = elvol.attribute("dec", QString::number(m_melodic[mIdx].decay)).toDouble();
+                        m_melodic[mIdx].sustain = elvol.attribute("sustain", QString::number(m_melodic[mIdx].sustain)).toDouble();
+                        m_melodic[mIdx].release = elvol.attribute("rel", QString::number(m_melodic[mIdx].release)).toDouble();
+                    }
+
+                    QDomNodeList patterns = e.elementsByTagName("pattern");
+                    for (int p = 0; p < patterns.size(); ++p) {
+                        QDomElement pat = patterns.at(p).toElement();
+                        int bar = pat.attribute("pos").toInt() / (16 * 12);
+                        if (bar >= 0 && bar < 8) {
+                            m_arrangerState[mIdx+1][bar] = bar + 1;
+                            QDomNodeList notes = pat.elementsByTagName("note");
+                            for (int nIdx = 0; nIdx < notes.size(); ++nIdx) {
+                                int step = notes.at(nIdx).toElement().attribute("pos").toInt() / 12;
+                                int key = 107 - notes.at(nIdx).toElement().attribute("key").toInt();
+                                if (step >= 0 && step < NUM_STEPS && key >= 0 && key < 96) {
+                                    m_melodic[mIdx].grid[bar][key][step] = true;
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+        n = n.nextSibling();
     }
 
 
@@ -827,31 +895,59 @@ void MainWindow::onImportMmpClicked() {
         }
     }
     updatePlaybackState();
-    QMessageBox::information(this, "Success", "Groovebox project loaded successfully!");
+    QMessageBox::information(this, "Success", "Full project loaded successfully!");
 }
 
 void MainWindow::onExportMmpClicked() {
     QString filePath = QFileDialog::getSaveFileName(this, "Save LMMS Project", "", "LMMS Project (*.mmp)");
     if (filePath.isEmpty()) return;
 
-    QDomDocument doc("lmms-project");
+    QDomDocument doc;
+    QDomProcessingInstruction instr = doc.createProcessingInstruction("xml", "version=\"1.0\"");
+    doc.appendChild(instr);
+
     QDomElement root = doc.createElement("lmms-project");
-    root.setAttribute("version", "1.2.2");
+    root.setAttribute("type", "song");
+    root.setAttribute("version", "20");
     doc.appendChild(root);
+
+    QDomElement head = doc.createElement("head");
+    head.setAttribute("bpm", QString::number(m_spinBpm->value()));
+    root.appendChild(head);
+
     QDomElement song = doc.createElement("song");
-    song.setAttribute("bpm", QString::number(m_spinBpm->value()));
     root.appendChild(song);
 
-    const int ticksPerStep = 48;
+    QDomElement trackContainer = doc.createElement("trackcontainer");
+    trackContainer.setAttribute("type", "song");
+    song.appendChild(trackContainer);
+
+    const int ticksPerStep = 12;
+
+
+    QDomElement bbMasterTrack = doc.createElement("track");
+    bbMasterTrack.setAttribute("name", "Beat/Bassline 0");
+    bbMasterTrack.setAttribute("type", "1");
+    trackContainer.appendChild(bbMasterTrack);
+
+    QDomElement bbTrack = doc.createElement("bbtrack");
+    bbMasterTrack.appendChild(bbTrack);
+
+    QDomElement bbTrackContainer = doc.createElement("trackcontainer");
+    bbTrackContainer.setAttribute("type", "bbtrackcontainer");
+    bbTrack.appendChild(bbTrackContainer);
 
     for (int r = 0; r < NUM_CHANNELS; ++r) {
-        bool hasNotes = false;
-        for (int c = 0; c < NUM_STEPS; ++c) { if (m_grid[r][c]->isChecked()) hasNotes = true; }
-        if (!hasNotes) continue;
-
         ChannelConfig& ch = m_channels[r];
-        QDomElement track = doc.createElement("track"); track.setAttribute("name", ch.name); track.setAttribute("type", "0"); song.appendChild(track);
-        QDomElement instTrack = doc.createElement("instrumenttrack"); track.appendChild(instTrack);
+        QDomElement track = doc.createElement("track");
+        track.setAttribute("name", ch.name);
+        track.setAttribute("type", "0");
+        bbTrackContainer.appendChild(track);
+
+        QDomElement instTrack = doc.createElement("instrumenttrack");
+        instTrack.setAttribute("vol", "100");
+        instTrack.setAttribute("pan", "0");
+        track.appendChild(instTrack);
 
         QDomElement instrument = doc.createElement("instrument"); instrument.setAttribute("name", "xpressive");
 
@@ -873,31 +969,62 @@ void MainWindow::onExportMmpClicked() {
 
         instrument.appendChild(xpressive); instTrack.appendChild(instrument);
 
-        for (int b = 0; b < 8; ++b) {
-            if (m_arrangerState[0][b] == 0) continue;
+        QDomElement eldata = doc.createElement("eldata");
+        eldata.setAttribute("fcut", "14000"); eldata.setAttribute("ftype", "0");
+        eldata.setAttribute("fres", "0.5"); eldata.setAttribute("fwet", "0");
 
-            QDomElement pattern = doc.createElement("pattern");
-            pattern.setAttribute("type", "1");
-            pattern.setAttribute("pos", QString::number(b * 16 * ticksPerStep));
-            pattern.setAttribute("steps", "16");
-            pattern.setAttribute("len", QString::number(16 * ticksPerStep));
-            track.appendChild(pattern);
+        QDomElement elvol = doc.createElement("elvol");
+        elvol.setAttribute("amt", "1");
+        elvol.setAttribute("att", QString::number(ch.attack));
+        elvol.setAttribute("dec", QString::number(ch.decay));
+        elvol.setAttribute("sustain", QString::number(ch.sustain));
+        elvol.setAttribute("rel", QString::number(ch.release));
+        elvol.setAttribute("hold", "0.5"); elvol.setAttribute("pdel", "0");
+        elvol.setAttribute("lspd", "0.1"); elvol.setAttribute("lshp", "0");
+        elvol.setAttribute("lspd_denominator", "4"); elvol.setAttribute("lspd_numerator", "4");
+        elvol.setAttribute("lspd_syncmode", "0"); elvol.setAttribute("ctlenvamt", "0");
+        elvol.setAttribute("x100", "0"); elvol.setAttribute("userwavefile", "");
+        elvol.setAttribute("lpdel", "0"); elvol.setAttribute("lamt", "0"); elvol.setAttribute("latt", "0");
 
-            for (int c = 0; c < NUM_STEPS; ++c) {
-                if (m_grid[r][c]->isChecked()) {
-                    QDomElement note = doc.createElement("note");
-                    note.setAttribute("pos", QString::number(c * ticksPerStep)); note.setAttribute("len", QString::number(ticksPerStep));
-                    note.setAttribute("key", "60"); note.setAttribute("vol", QString::number(int(ch.vol * 100)));
-                    pattern.appendChild(note);
-                }
+        eldata.appendChild(elvol); instTrack.appendChild(eldata);
+
+        QDomElement pattern = doc.createElement("pattern");
+        pattern.setAttribute("type", "0");
+        pattern.setAttribute("pos", "0");
+        pattern.setAttribute("steps", "16");
+        track.appendChild(pattern);
+
+        for (int c = 0; c < NUM_STEPS; ++c) {
+            if (m_grid[r][c]->isChecked()) {
+                QDomElement note = doc.createElement("note");
+                note.setAttribute("pos", QString::number(c * ticksPerStep));
+                note.setAttribute("len", "12");
+                note.setAttribute("key", "60");
+                note.setAttribute("vol", QString::number(int(ch.vol * 100)));
+                pattern.appendChild(note);
             }
         }
     }
 
+    for (int b = 0; b < 8; ++b) {
+        if (m_arrangerState[0][b] == 1) {
+            QDomElement bbtco = doc.createElement("bbtco");
+            bbtco.setAttribute("pos", QString::number(b * 16 * ticksPerStep));
+            bbtco.setAttribute("len", "192");
+            bbMasterTrack.appendChild(bbtco);
+        }
+    }
+
+
     for (int m = 0; m < NUM_MELODIC; ++m) {
         MelodicConfig& ch = m_melodic[m];
-        QDomElement track = doc.createElement("track"); track.setAttribute("name", ch.name); track.setAttribute("type", "0"); song.appendChild(track);
-        QDomElement instTrack = doc.createElement("instrumenttrack"); track.appendChild(instTrack);
+        QDomElement track = doc.createElement("track"); track.setAttribute("name", ch.name); track.setAttribute("type", "0");
+        trackContainer.appendChild(track);
+
+        QDomElement instTrack = doc.createElement("instrumenttrack");
+        instTrack.setAttribute("vol", "100");
+        instTrack.setAttribute("pan", "0");
+        track.appendChild(instTrack);
 
         QDomElement instrument = doc.createElement("instrument"); instrument.setAttribute("name", "xpressive");
 
@@ -919,6 +1046,25 @@ void MainWindow::onExportMmpClicked() {
 
         instrument.appendChild(xpressive); instTrack.appendChild(instrument);
 
+        QDomElement eldata = doc.createElement("eldata");
+        eldata.setAttribute("fcut", "14000"); eldata.setAttribute("ftype", "0");
+        eldata.setAttribute("fres", "0.5"); eldata.setAttribute("fwet", "0");
+
+        QDomElement elvol = doc.createElement("elvol");
+        elvol.setAttribute("amt", "1");
+        elvol.setAttribute("att", QString::number(ch.attack));
+        elvol.setAttribute("dec", QString::number(ch.decay));
+        elvol.setAttribute("sustain", QString::number(ch.sustain));
+        elvol.setAttribute("rel", QString::number(ch.release));
+        elvol.setAttribute("hold", "0.5"); elvol.setAttribute("pdel", "0");
+        elvol.setAttribute("lspd", "0.1"); elvol.setAttribute("lshp", "0");
+        elvol.setAttribute("lspd_denominator", "4"); elvol.setAttribute("lspd_numerator", "4");
+        elvol.setAttribute("lspd_syncmode", "0"); elvol.setAttribute("ctlenvamt", "0");
+        elvol.setAttribute("x100", "0"); elvol.setAttribute("userwavefile", "");
+        elvol.setAttribute("lpdel", "0"); elvol.setAttribute("lamt", "0"); elvol.setAttribute("latt", "0");
+
+        eldata.appendChild(elvol); instTrack.appendChild(eldata);
+
         for (int b = 0; b < 8; ++b) {
             int patIdx = m_arrangerState[m+1][b];
             if (patIdx == 0) continue;
@@ -930,6 +1076,7 @@ void MainWindow::onExportMmpClicked() {
 
             QDomElement pattern = doc.createElement("pattern");
             pattern.setAttribute("type", "1");
+
             pattern.setAttribute("pos", QString::number(b * 16 * ticksPerStep));
             pattern.setAttribute("steps", "16");
             pattern.setAttribute("len", QString::number(16 * ticksPerStep));
@@ -939,8 +1086,11 @@ void MainWindow::onExportMmpClicked() {
                 for (int c = 0; c < 16; ++c) {
                     if (ch.grid[p][key][c]) {
                         QDomElement note = doc.createElement("note");
-                        note.setAttribute("pos", QString::number(c * ticksPerStep)); note.setAttribute("len", QString::number(ticksPerStep));
-                        note.setAttribute("key", QString::number(107 - key)); note.setAttribute("vol", QString::number(int(ch.vol * 100)));
+
+                        note.setAttribute("pos", QString::number(c * ticksPerStep));
+                        note.setAttribute("len", QString::number(ticksPerStep));
+                        note.setAttribute("key", QString::number(107 - key));
+                        note.setAttribute("vol", QString::number(int(ch.vol * 100)));
                         pattern.appendChild(note);
                     }
                 }
@@ -951,6 +1101,6 @@ void MainWindow::onExportMmpClicked() {
     QFile file(filePath);
     if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QTextStream out(&file); out << doc.toString(4); file.close();
-        QMessageBox::information(this, "Export Complete", "Groove sequence + Melodies saved to:\n" + filePath);
+        QMessageBox::information(this, "Export Complete", "Full project saved to:\n" + filePath);
     }
 }
