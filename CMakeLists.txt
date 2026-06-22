@@ -16,6 +16,14 @@ qt_add_executable(XpressiveGroovebox
     mainwindow.h
     synthengine.cpp
     synthengine.h
+    xpressive_parser.cpp
+    xpressive_parser.h
+    instrument.cpp
+    instrument.h
+    effect.cpp
+    effect.h
+    pianoroll.cpp
+    pianoroll.h
 )
 
 target_link_libraries(XpressiveGroovebox PRIVATE Qt6::Widgets Qt6::Xml Qt6::Multimedia)

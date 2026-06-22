@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "synthengine.h"
+#include "xpressive_parser.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -14,256 +15,6 @@
 #include <QTimer>
 #include <QFrame>
 #include <QMutexLocker>
-#include <cmath>
-#include <memory>
-#include <string>
-#include <functional>
-#include <stdexcept>
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
-
-namespace XpressiveParser {
-struct Env { double t=0, tempo=120, srate=44100, f=440; };
-class Node { public: virtual ~Node()=default; virtual double eval(Env& env)=0; };
-
-enum Token { TOK_EOF, TOK_NUM, TOK_ID, TOK_PLUS, TOK_MINUS, TOK_MUL, TOK_DIV, TOK_LPAREN, TOK_RPAREN, TOK_COMMA, TOK_EQ, TOK_NEQ, TOK_LT, TOK_GT, TOK_LTE, TOK_GTE, TOK_OR, TOK_AND };
-
-struct Lexer {
-    const char* p; Token curTok; double numVal; std::string idStr;
-    Lexer(const char* str) : p(str) { next(); }
-    void next() {
-        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-        if (!*p) { curTok = TOK_EOF; return; }
-        if (isdigit(*p) || *p == '.') { char* end; numVal = strtod(p, &end); p = end; curTok = TOK_NUM; return; }
-        if (isalpha(*p)) { idStr.clear(); while (isalnum(*p) || *p == '_') idStr += *p++; curTok = TOK_ID; return; }
-        char c = *p++;
-        if (c == '=') { if (*p == '=') { p++; curTok = TOK_EQ; } else curTok = TOK_EOF; }
-        else if (c == '!') { if (*p == '=') { p++; curTok = TOK_NEQ; } else curTok = TOK_EOF; }
-        else if (c == '<') { if (*p == '=') { p++; curTok = TOK_LTE; } else curTok = TOK_LT; }
-        else if (c == '>') { if (*p == '=') { p++; curTok = TOK_GTE; } else curTok = TOK_GT; }
-        else if (c == '|') { curTok = TOK_OR; } else if (c == '&') { curTok = TOK_AND; }
-        else if (c == '+') curTok = TOK_PLUS; else if (c == '-') curTok = TOK_MINUS;
-        else if (c == '*') curTok = TOK_MUL; else if (c == '/') curTok = TOK_DIV;
-        else if (c == '(') curTok = TOK_LPAREN; else if (c == ')') curTok = TOK_RPAREN;
-        else if (c == ',') curTok = TOK_COMMA; else curTok = TOK_EOF;
-    }
-};
-
-class NumNode : public Node { double val; public: NumNode(double v):val(v){} double eval(Env&) override { return val; } };
-class VarNode : public Node { std::string name; public: VarNode(std::string n):name(n){} double eval(Env& e) override { if(name=="t") return e.t; if(name=="tempo") return e.tempo; if(name=="srate") return e.srate; return e.f; } };
-class UnaryNode : public Node { std::unique_ptr<Node> n; std::function<double(double)> op; public: UnaryNode(std::unique_ptr<Node> n, std::function<double(double)> op):n(std::move(n)),op(op){} double eval(Env& e) override { return op(n->eval(e)); } };
-class FuncNode : public Node { std::unique_ptr<Node> n; std::function<double(double)> op; public: FuncNode(std::unique_ptr<Node> n, std::function<double(double)> op):n(std::move(n)),op(op){} double eval(Env& e) override { return op(n->eval(e)); } };
-class BinFuncNode : public Node { std::unique_ptr<Node> l,r; std::function<double(double,double)> op; public: BinFuncNode(std::unique_ptr<Node> l, std::unique_ptr<Node> r, std::function<double(double,double)> op):l(std::move(l)),r(std::move(r)),op(op){} double eval(Env& e) override { return op(l->eval(e), r->eval(e)); } };
-class TernaryFuncNode : public Node { std::unique_ptr<Node> a,b,c; std::function<double(double,double,double)> op; public: TernaryFuncNode(std::unique_ptr<Node> a, std::unique_ptr<Node> b, std::unique_ptr<Node> c, std::function<double(double,double,double)> op):a(std::move(a)),b(std::move(b)),c(std::move(c)),op(op){} double eval(Env& e) override { return op(a->eval(e), b->eval(e), c->eval(e)); } };
-class BinOpNode : public Node { std::unique_ptr<Node> l,r; Token op; public: BinOpNode(std::unique_ptr<Node> l, std::unique_ptr<Node> r, Token op):l(std::move(l)),r(std::move(r)),op(op){} double eval(Env& e) override { double a=l->eval(e), b=r->eval(e); switch(op){ case TOK_PLUS: return a+b; case TOK_MINUS: return a-b; case TOK_MUL: return a*b; case TOK_DIV: return b==0?0:a/b; case TOK_EQ: return a==b?1:0; case TOK_NEQ: return a!=b?1:0; case TOK_LT: return a<b?1:0; case TOK_GT: return a>b?1:0; case TOK_LTE: return a<=b?1:0; case TOK_GTE: return a>=b?1:0; case TOK_OR: return (a!=0||b!=0)?1:0; case TOK_AND: return (a!=0&&b!=0)?1:0; default: return 0; } } };
-
-class IntegrateNode : public Node { std::unique_ptr<Node> n; double accum=0; public: IntegrateNode(std::unique_ptr<Node> n):n(std::move(n)){} double eval(Env& e) override { accum += n->eval(e) / e.srate; return accum; } };
-
-std::unique_ptr<Node> parseExpr(Lexer& lex);
-std::unique_ptr<Node> parsePrimary(Lexer& lex) {
-    if (lex.curTok == TOK_NUM) { auto n = std::make_unique<NumNode>(lex.numVal); lex.next(); return n; }
-    if (lex.curTok == TOK_ID) {
-        std::string id = lex.idStr; lex.next();
-        if (id == "t" || id == "tempo" || id == "srate" || id == "f") return std::make_unique<VarNode>(id);
-        if (lex.curTok == TOK_LPAREN) {
-            lex.next(); auto a1 = parseExpr(lex);
-
-            if (id == "clamp") {
-                if (lex.curTok != TOK_COMMA) throw std::runtime_error("Expected ',' in clamp");
-                lex.next(); auto a2 = parseExpr(lex);
-                if (lex.curTok != TOK_COMMA) throw std::runtime_error("Expected ',' in clamp");
-                lex.next(); auto a3 = parseExpr(lex);
-                if (lex.curTok != TOK_RPAREN) throw std::runtime_error("Expected ')' in clamp");
-                lex.next();
-                return std::make_unique<TernaryFuncNode>(std::move(a1), std::move(a2), std::move(a3), [](double mn, double v, double mx){ return std::max(mn, std::min(v, mx)); });
-            }
-
-            std::unique_ptr<Node> a2;
-            if (lex.curTok == TOK_COMMA) { lex.next(); a2 = parseExpr(lex); }
-            if (lex.curTok != TOK_RPAREN) throw std::runtime_error("Expected ')'");
-            lex.next();
-
-            if (id == "mod") return std::make_unique<BinFuncNode>(std::move(a1), std::move(a2), [](double a, double b){ return b==0?0:std::fmod(a,b); });
-            if (id == "sinew") return std::make_unique<FuncNode>(std::move(a1), [](double x){ return std::sin(2.0*M_PI*x); });
-            if (id == "saww") return std::make_unique<FuncNode>(std::move(a1), [](double x){ double p=x-std::floor(x); return 2.0*p-1.0; });
-            if (id == "squarew") return std::make_unique<FuncNode>(std::move(a1), [](double x){ double p=x-std::floor(x); return p<0.5?1.0:-1.0; });
-            if (id == "exp") return std::make_unique<FuncNode>(std::move(a1), [](double x){ return std::exp(x); });
-            if (id == "floor") return std::make_unique<FuncNode>(std::move(a1), [](double x){ return std::floor(x); });
-            if (id == "randv") return std::make_unique<FuncNode>(std::move(a1), [](double){ return (static_cast<double>(rand())/RAND_MAX)*2.0-1.0; });
-            if (id == "integrate") return std::make_unique<IntegrateNode>(std::move(a1));
-
-            if (id == "W1") return std::make_unique<FuncNode>(std::move(a1), [](double x){
-                    double p1 = x - std::floor(x);
-                    double p2 = (x*2.0) - std::floor(x*2.0);
-                    return std::max(-1.0, std::min((2.0*p1-1.0) + 0.5*(p2<0.5?1.0:-1.0), 1.0));
-                });
-            if (id == "W2") return std::make_unique<FuncNode>(std::move(a1), [](double x){
-                    return 0.3 * std::sin(2.0*M_PI*x*0.5);
-                });
-        }
-        throw std::runtime_error("Unknown function: " + id);
-    }
-    if (lex.curTok == TOK_LPAREN) { lex.next(); auto n = parseExpr(lex); if (lex.curTok != TOK_RPAREN) throw std::runtime_error("Expected ')'"); lex.next(); return n; }
-    throw std::runtime_error("Syntax error");
-}
-std::unique_ptr<Node> parseUnary(Lexer& lex) { if(lex.curTok==TOK_MINUS){ lex.next(); return std::make_unique<UnaryNode>(parsePrimary(lex), [](double x){return -x;}); } return parsePrimary(lex); }
-std::unique_ptr<Node> parseMulDiv(Lexer& lex) { auto l=parseUnary(lex); while(lex.curTok==TOK_MUL||lex.curTok==TOK_DIV){ Token op=lex.curTok; lex.next(); l=std::make_unique<BinOpNode>(std::move(l), parseUnary(lex), op); } return l; }
-std::unique_ptr<Node> parseAddSub(Lexer& lex) { auto l=parseMulDiv(lex); while(lex.curTok==TOK_PLUS||lex.curTok==TOK_MINUS){ Token op=lex.curTok; lex.next(); l=std::make_unique<BinOpNode>(std::move(l), parseMulDiv(lex), op); } return l; }
-std::unique_ptr<Node> parseRel(Lexer& lex) { auto l=parseAddSub(lex); while(lex.curTok==TOK_LT||lex.curTok==TOK_GT||lex.curTok==TOK_LTE||lex.curTok==TOK_GTE){ Token op=lex.curTok; lex.next(); l=std::make_unique<BinOpNode>(std::move(l), parseAddSub(lex), op); } return l; }
-std::unique_ptr<Node> parseEq(Lexer& lex) { auto l=parseRel(lex); while(lex.curTok==TOK_EQ||lex.curTok==TOK_NEQ){ Token op=lex.curTok; lex.next(); l=std::make_unique<BinOpNode>(std::move(l), parseRel(lex), op); } return l; }
-std::unique_ptr<Node> parseAnd(Lexer& lex) { auto l=parseEq(lex); while(lex.curTok==TOK_AND){ lex.next(); l=std::make_unique<BinOpNode>(std::move(l), parseEq(lex), TOK_AND); } return l; }
-std::unique_ptr<Node> parseExpr(Lexer& lex) { auto l=parseAnd(lex); while(lex.curTok==TOK_OR){ lex.next(); l=std::make_unique<BinOpNode>(std::move(l), parseAnd(lex), TOK_OR); } return l; }
-std::unique_ptr<Node> parse(const std::string& str) { Lexer lex(str.c_str()); return parseExpr(lex); }
-}
-
-
-
-ChannelConfigDialog::ChannelConfigDialog(ChannelConfig& config, QWidget *parent) : QDialog(parent) {
-    setWindowTitle("Configure " + config.name);
-    setMinimumWidth(300);
-    QVBoxLayout* mainLayout = new QVBoxLayout(this);
-    QFormLayout* form = new QFormLayout();
-
-    txtW1 = new QTextEdit(config.w1); txtW1->setMaximumHeight(40); form->addRow("W1:", txtW1);
-    txtO1 = new QTextEdit(config.o1); txtO1->setMaximumHeight(40); form->addRow("O1:", txtO1);
-
-    spinA = new QDoubleSpinBox(); spinA->setRange(0, 5); spinA->setValue(config.attack); spinA->setSingleStep(0.01);
-    spinD = new QDoubleSpinBox(); spinD->setRange(0, 5); spinD->setValue(config.decay); spinD->setSingleStep(0.01);
-    spinS = new QDoubleSpinBox(); spinS->setRange(0, 1); spinS->setValue(config.sustain); spinS->setSingleStep(0.1);
-    spinR = new QDoubleSpinBox(); spinR->setRange(0, 5); spinR->setValue(config.release); spinR->setSingleStep(0.01);
-    spinVol = new QDoubleSpinBox(); spinVol->setRange(0, 2); spinVol->setValue(config.vol); spinVol->setSingleStep(0.1);
-
-    form->addRow("Attack(s):", spinA); form->addRow("Decay(s):", spinD);
-    form->addRow("Sustain:", spinS); form->addRow("Release(s):", spinR);
-    form->addRow("Volume:", spinVol);
-
-    mainLayout->addLayout(form);
-    QPushButton* btnSave = new QPushButton("Apply & Close");
-    connect(btnSave, &QPushButton::clicked, this, &QDialog::accept);
-    mainLayout->addWidget(btnSave);
-
-    setStyleSheet("QDialog { background-color: #2b2b2b; color: #ffffff; font-size: 11px; } QTextEdit, QDoubleSpinBox { background-color: #1e1e1e; color: #fff; border: 1px solid #555; } QPushButton { background-color: #007acc; padding: 8px; color: white; font-weight: bold; border-radius: 4px; }");
-}
-
-void ChannelConfigDialog::saveToConfig(ChannelConfig& config) {
-    config.w1 = txtW1->toPlainText(); config.o1 = txtO1->toPlainText();
-    config.attack = spinA->value(); config.decay = spinD->value(); config.sustain = spinS->value(); config.release = spinR->value(); config.vol = spinVol->value();
-}
-
-
-MelodicConfigDialog::MelodicConfigDialog(MelodicConfig& config, QWidget *parent) : QDialog(parent) {
-    setWindowTitle("Configure " + config.name);
-    setMinimumWidth(300);
-    QVBoxLayout* mainLayout = new QVBoxLayout(this);
-    QFormLayout* form = new QFormLayout();
-
-    txtW1 = new QTextEdit(config.w1); txtW1->setMaximumHeight(40); form->addRow("W1:", txtW1);
-    txtW2 = new QTextEdit(config.w2); txtW2->setMaximumHeight(40); form->addRow("W2:", txtW2);
-    txtO1 = new QTextEdit(config.o1); txtO1->setMaximumHeight(40); form->addRow("O1:", txtO1);
-
-    spinA = new QDoubleSpinBox(); spinA->setRange(0, 5); spinA->setValue(config.attack); spinA->setSingleStep(0.01);
-    spinD = new QDoubleSpinBox(); spinD->setRange(0, 5); spinD->setValue(config.decay); spinD->setSingleStep(0.01);
-    spinS = new QDoubleSpinBox(); spinS->setRange(0, 1); spinS->setValue(config.sustain); spinS->setSingleStep(0.1);
-    spinR = new QDoubleSpinBox(); spinR->setRange(0, 5); spinR->setValue(config.release); spinR->setSingleStep(0.01);
-    spinVol = new QDoubleSpinBox(); spinVol->setRange(0, 2); spinVol->setValue(config.vol); spinVol->setSingleStep(0.1);
-
-    form->addRow("Attack(s):", spinA); form->addRow("Decay(s):", spinD);
-    form->addRow("Sustain:", spinS); form->addRow("Release(s):", spinR);
-    form->addRow("Volume:", spinVol);
-
-    mainLayout->addLayout(form);
-    QPushButton* btnSave = new QPushButton("Apply & Close");
-    connect(btnSave, &QPushButton::clicked, this, &QDialog::accept);
-    mainLayout->addWidget(btnSave);
-
-    setStyleSheet("QDialog { background-color: #2b2b2b; color: #ffffff; font-size: 11px; } QTextEdit, QDoubleSpinBox { background-color: #1e1e1e; color: #fff; border: 1px solid #555; } QPushButton { background-color: #7a00cc; padding: 8px; color: white; font-weight: bold; border-radius: 4px; }");
-}
-
-void MelodicConfigDialog::saveToConfig(MelodicConfig& config) {
-    config.w1 = txtW1->toPlainText(); config.w2 = txtW2->toPlainText(); config.o1 = txtO1->toPlainText();
-    config.attack = spinA->value(); config.decay = spinD->value(); config.sustain = spinS->value(); config.release = spinR->value(); config.vol = spinVol->value();
-}
-
-
-PianoRollDialog::PianoRollDialog(bool (&pattern)[96][16], const QString& title, QWidget *parent) : QDialog(parent) {
-    setWindowTitle(title);
-
-    QVBoxLayout* mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(2, 2, 2, 2);
-    mainLayout->setSpacing(2);
-
-    QPushButton* btnSave = new QPushButton("💾 Save Pattern & Close");
-    btnSave->setStyleSheet("background-color: #7a00cc; color: white; padding: 10px; font-weight: bold; border-radius: 4px;");
-    connect(btnSave, &QPushButton::clicked, this, &QDialog::accept);
-    mainLayout->addWidget(btnSave);
-
-    QScrollArea* scrollArea = new QScrollArea();
-    scrollArea->setWidgetResizable(true);
-
-    QWidget* gridWidget = new QWidget();
-    QGridLayout* layout = new QGridLayout(gridWidget);
-    layout->setSpacing(1);
-    layout->setContentsMargins(0,0,0,0);
-
-    const QString noteNames[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
-
-    for (int r = 0; r < 96; ++r) {
-        int midiNote = 107 - r;
-        int octave = (midiNote / 12) - 1;
-        int noteIndex = midiNote % 12;
-        bool isBlackKey = (noteIndex == 1 || noteIndex == 3 || noteIndex == 6 || noteIndex == 8 || noteIndex == 10);
-
-        QLabel* keyLabel = new QLabel(noteNames[noteIndex] + QString::number(octave));
-        keyLabel->setFixedSize(35, 30);
-        keyLabel->setAlignment(Qt::AlignCenter);
-
-        if (isBlackKey) {
-            keyLabel->setStyleSheet("background-color: #111; color: white; border: 1px solid #000; font-size: 10px;");
-        } else {
-            keyLabel->setStyleSheet("background-color: #eee; color: black; border: 1px solid #ccc; font-weight: bold; font-size: 10px;");
-        }
-        layout->addWidget(keyLabel, r, 0);
-
-        for (int c = 0; c < 16; ++c) {
-            m_btnGrid[r][c] = new QPushButton();
-            m_btnGrid[r][c]->setFixedSize(14, 30);
-            m_btnGrid[r][c]->setCheckable(true);
-            m_btnGrid[r][c]->setChecked(pattern[r][c]);
-
-            QString bg = (c / 4) % 2 == 0 ? "#2a2a2a" : "#333333";
-            m_btnGrid[r][c]->setStyleSheet(QString(
-                                               "QPushButton { background-color: %1; border: 1px solid #1a1a1a; border-radius: 2px; }"
-                                               "QPushButton:checked { background-color: #7a00cc; border: 1px solid #ffffff; }"
-                                               ).arg(bg));
-
-            layout->addWidget(m_btnGrid[r][c], r, c + 1);
-        }
-    }
-
-    scrollArea->setWidget(gridWidget);
-    mainLayout->addWidget(scrollArea);
-
-    setStyleSheet("QDialog { background-color: #1e1e1e; }");
-
-    setWindowState(Qt::WindowMaximized);
-
-    QTimer::singleShot(50, [scrollArea, gridWidget]() {
-        int targetY = (47 * 32) - (scrollArea->viewport()->height() / 2);
-        scrollArea->verticalScrollBar()->setValue(std::max(0, targetY));
-    });
-}
-
-void PianoRollDialog::saveToGrid(bool (&pattern)[96][16]) {
-    for(int r=0; r<96; ++r) {
-        for(int c=0; c<16; ++c) {
-            pattern[r][c] = m_btnGrid[r][c]->isChecked();
-        }
-    }
-}
-
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     m_synthEngine = new SynthEngine(this);
@@ -334,7 +85,6 @@ void MainWindow::setupUI() {
 
     m_txtTestString = new QLineEdit();
     m_txtTestString->setPlaceholderText("Paste Custom Formula Here...");
-    m_txtTestString->setText("clamp(-1, 0.15 * ( ((mod(t*(tempo/30),16)>=0 & mod(t*(tempo/30),16)<1)*exp(-mod(t*(tempo/30),16)*4) + (mod(t*(tempo/30),16)>=1.5 & mod(t*(tempo/30),16)<2.5)*exp(-(mod(t*(tempo/30),16)-1.5)*4) + (mod(t*(tempo/30),16)>=2.5 & mod(t*(tempo/30),16)<3.5)*exp(-(mod(t*(tempo/30),16)-2.5)*4) + (mod(t*(tempo/30),16)>=8 & mod(t*(tempo/30),16)<9)*exp(-(mod(t*(tempo/30),16)-8)*4) + (mod(t*(tempo/30),16)>=9.5 & mod(t*(tempo/30),16)<10.5)*exp(-(mod(t*(tempo/30),16)-9.5)*4) + (mod(t*(tempo/30),16)>=10.5 & mod(t*(tempo/30),16)<11)*exp(-(mod(t*(tempo/30),16)-10.5)*4)) * (W1(integrate(174.61))+W1(integrate(207.65))+W1(integrate(261.63))+W1(integrate(311.13))+W1(integrate(392.00))) + ((mod(t*(tempo/30),16)>=3.5 & mod(t*(tempo/30),16)<4.5)*exp(-(mod(t*(tempo/30),16)-3.5)*4) + (mod(t*(tempo/30),16)>=5 & mod(t*(tempo/30),16)<6)*exp(-(mod(t*(tempo/30),16)-5)*4) + (mod(t*(tempo/30),16)>=6.5 & mod(t*(tempo/30),16)<7.5)*exp(-(mod(t*(tempo/30),16)-6.5)*4)) * (W1(integrate(207.65))+W1(integrate(261.63))+W1(integrate(311.13))+W1(integrate(349.23))+W1(integrate(392.00))) + ((mod(t*(tempo/30),16)>=11.5 & mod(t*(tempo/30),16)<12.5)*exp(-(mod(t*(tempo/30),16)-11.5)*4) + (mod(t*(tempo/30),16)>=14 & mod(t*(tempo/30),16)<15)*exp(-(mod(t*(tempo/30),16)-14)*4) + 0.7*(mod(t*(tempo/30),16)>=15 & mod(t*(tempo/30),16)<16)*exp(-(mod(t*(tempo/30),16)-15)*4)) * (W1(integrate(155.56))+W1(integrate(207.65))+W1(integrate(233.08))+W1(integrate(277.18))+W1(integrate(349.23))+W1(integrate(415.30))) + 0.8*((mod(t*(tempo/30),16)>=12.5 & mod(t*(tempo/30),16)<13.5)*exp(-(mod(t*(tempo/30),16)-12.5)*4)) * (W1(integrate(155.56))+W1(integrate(207.65))+W1(integrate(233.08))+W1(integrate(277.18))+W1(integrate(349.23))) + 0.8*((mod(t*(tempo/30),16)>=13 & mod(t*(tempo/30),16)<14)*exp(-(mod(t*(tempo/30),16)-13)*4)) * W1(integrate(415.30)) ), 1)");
 
     m_btnTestString = new QPushButton("🧪 Test Expr");
     m_btnTestString->setStyleSheet("background-color: #5500aa; color: white; padding: 5px 15px;");
@@ -454,8 +204,6 @@ void MainWindow::setupUI() {
     mainLayout->addWidget(melodicBox);
     mainLayout->addStretch();
 
-    m_txtPreview = new QTextEdit();
-    m_txtPreview->hide();
     connect(m_btnPlay, &QPushButton::clicked, this, &MainWindow::onPlayClicked);
     connect(m_btnTestString, &QPushButton::clicked, this, &MainWindow::onTestStringClicked);
     connect(m_btnExport, &QPushButton::clicked, this, &MainWindow::onExportMmpClicked);
@@ -507,6 +255,7 @@ void MainWindow::updatePlaybackState() {
         m_playState.synths[m].d = m_melodic[m].decay;
         m_playState.synths[m].s = m_melodic[m].sustain;
         m_playState.synths[m].vol = m_melodic[m].vol;
+        m_playState.synths[m].useAdsr = m_melodic[m].useAdsr;
         QString w1 = m_melodic[m].w1.toLower();
         m_playState.synths[m].w1Type = w1.contains("sin") ? 0 : w1.contains("saw") ? 2 : 3;
 
@@ -547,79 +296,6 @@ QString MainWindow::getAdsrString(double a, double d, double s, double r) {
     QString attackStr = (a > 0) ? QString("(lt / %1)").arg(a) : "1.0";
     QString decayStr = (d > 0) ? QString("(1.0 - (lt - %1) * ((1.0 - %2) / %3))").arg(a).arg(s).arg(d) : QString::number(s);
     return QString("((lt < %1) ? %2 : ((lt < %3) ? %4 : %5))").arg(a).arg(attackStr).arg(a + d).arg(decayStr).arg(s);
-}
-
-QString MainWindow::generateMathExpression() {
-    double bps = m_spinBpm->value() / 60.0;
-    double stepsPerSec = bps * 4.0;
-    QString finalMath = QString("var srate = 44100.0;\nvar stepRate = %1;\nvar globalStep = floor(t * stepRate);\nvar seqStep = mod(globalStep, 16);\nvar currentBar = mod(floor(globalStep / 16), 8);\nvar lt = mod(t, 1.0 / stepRate);\n\n").arg(stepsPerSec);
-    QString mix = "0";
-
-    for (int r = 0; r < NUM_CHANNELS; ++r) {
-        QString stepGate = ""; bool hasSteps = false;
-        for (int c = 0; c < NUM_STEPS; ++c) {
-            if (m_grid[r][c]->isChecked()) {
-                if (hasSteps) stepGate += " + ";
-                stepGate += QString("(seqStep == %1)").arg(c);
-                hasSteps = true;
-            }
-        }
-        QString arrGate = "";
-        for (int b = 0; b < 8; ++b) if(m_arrangerState[0][b] == 1) arrGate += QString("(currentBar==%1)+").arg(b);
-        if(arrGate.endsWith("+")) arrGate.chop(1);
-        if(arrGate.isEmpty()) arrGate = "0";
-
-        if (hasSteps) {
-            ChannelConfig& ch = m_channels[r];
-            QString chW1 = ch.w1; chW1.replace("t", "lt");
-            QString chO1 = ch.o1; chO1.replace("W1", "(" + chW1 + ")"); chO1.replace("t", "lt");
-            QString adsr = getAdsrString(ch.attack, ch.decay, ch.sustain, ch.release);
-            finalMath += QString("// Drum %1 (%2)\nvar gate_d%1 = (%3) * (%7);\nvar out_d%1 = (%4) * %5 * %6 * gate_d%1;\n\n").arg(r).arg(ch.name).arg(stepGate).arg(chO1).arg(adsr).arg(ch.vol).arg(arrGate);
-            mix += QString(" + out_d%1").arg(r);
-        }
-    }
-
-    for (int m = 0; m < NUM_MELODIC; ++m) {
-        MelodicConfig& ch = m_melodic[m];
-        bool trackUsed = false;
-
-        for (int b = 0; b < 8; ++b) {
-            int patIdx = m_arrangerState[m+1][b];
-            if (patIdx == 0) continue;
-            int p = patIdx - 1;
-
-            for (int key = 0; key < 96; ++key) {
-                QString stepGate = ""; bool hasSteps = false;
-                for (int c = 0; c < NUM_STEPS; ++c) {
-                    if (ch.grid[p][key][c]) {
-                        if (hasSteps) stepGate += " + ";
-                        stepGate += QString("(seqStep == %1)").arg(c);
-                        hasSteps = true;
-                    }
-                }
-
-                if (hasSteps) {
-                    if(!trackUsed) { finalMath += QString("// Synth %1 (%2)\n").arg(m).arg(ch.name); trackUsed = true; }
-                    double freq = 440.0 * std::pow(2.0, ((107 - key) - 69) / 12.0);
-                    QString chW1 = ch.w1; chW1.replace("t", "lt");
-                    QString chW2 = ch.w2; chW2.replace("t", "lt");
-                    QString chO1 = ch.o1;
-                    chO1.replace("W1", "(" + chW1 + ")");
-                    chO1.replace("W2", "(" + chW2 + ")");
-                    chO1.replace("f", QString::number(freq, 'f', 2));
-                    chO1.replace("t", "lt");
-                    QString adsr = getAdsrString(ch.attack, ch.decay, ch.sustain, ch.release);
-
-                    finalMath += QString("var gate_m%1_b%2_k%3 = (%4) * (currentBar == %5);\n").arg(m).arg(b).arg(key).arg(stepGate).arg(b);
-                    finalMath += QString("var out_m%1_b%2_k%3 = (%4) * %5 * %6 * gate_m%1_b%2_k%3;\n").arg(m).arg(b).arg(key).arg(chO1).arg(adsr).arg(ch.vol);
-                    mix += QString(" + out_m%1_b%2_k%3").arg(m).arg(b).arg(key);
-                }
-            }
-        }
-        if(trackUsed) finalMath += "\n";
-    }
-    finalMath += QString("clamp(-1.0, %1, 1.0)\n").arg(mix);
-    return finalMath;
 }
 
 void MainWindow::onPlayClicked() {
@@ -678,12 +354,16 @@ void MainWindow::onPlayClicked() {
                 if (patIdx > 0) {
                     int p = patIdx - 1;
                     for(int key=0; key<96; ++key) {
-                        if (m_playState.synthGrid[m][p][key][seqStep]) {
+                        if (m_playState.synthGrid[m][p][key][seqStep].active) {
                             const auto& trk = m_playState.synths[m];
-                            double env = trk.s;
-                            if (lt < trk.a && trk.a > 0.001) env = lt / trk.a;
-                            else if (lt < trk.a + trk.d && trk.d > 0.001) env = 1.0 - ((lt - trk.a) / trk.d) * (1.0 - trk.s);
-                            else if (trk.a == 0 && trk.d == 0) env = 1.0;
+                            
+                            double env = 1.0;
+                            if (trk.useAdsr) {
+                                env = trk.s;
+                                if (lt < trk.a && trk.a > 0.001) env = lt / trk.a;
+                                else if (lt < trk.a + trk.d && trk.d > 0.001) env = 1.0 - ((lt - trk.a) / trk.d) * (1.0 - trk.s);
+                                else if (trk.a == 0 && trk.d == 0) env = 1.0;
+                            }
 
                             double freq = noteFreqs[key];
                             double osc = 0.0, phase = t * freq;
@@ -697,7 +377,8 @@ void MainWindow::onPlayClicked() {
                     }
                 }
             }
-            return std::max(-1.0, std::min(mix, 1.0));
+            double finalMix = std::max(-1.0, std::min(mix, 1.0));
+            return m_masterEffect.process(finalMix);
         });
 
         m_synthEngine->start();
@@ -746,7 +427,6 @@ void MainWindow::onTestStringClicked() {
     }
 }
 
-
 void MainWindow::onImportMmpClicked() {
     QString filePath = QFileDialog::getOpenFileName(this, "Open LMMS Project", "", "LMMS Project (*.mmp)");
     if (filePath.isEmpty()) return;
@@ -758,7 +438,6 @@ void MainWindow::onImportMmpClicked() {
     if (!doc.setContent(&file)) { QMessageBox::warning(this, "Parse Error", "Failed to parse .mmp file format."); return; }
 
     QDomElement root = doc.documentElement();
-
     QDomElement head = root.firstChildElement("head");
     m_spinBpm->setValue(head.attribute("bpm", "120").toInt());
 
@@ -768,7 +447,7 @@ void MainWindow::onImportMmpClicked() {
         for (int b = 0; b < 8; ++b) {
             m_arrangerState[t][b] = 0;
             if (t > 0) {
-                for (int k = 0; k < 96; ++k) { for (int c = 0; c < NUM_STEPS; ++c) m_melodic[t-1].grid[b][k][c] = false; }
+                for (int k = 0; k < 96; ++k) { for (int c = 0; c < NUM_STEPS; ++c) m_melodic[t-1].grid[b][k][c].active = false; }
             }
         }
     }
@@ -776,12 +455,10 @@ void MainWindow::onImportMmpClicked() {
     QDomElement song = root.firstChildElement("song");
     QDomElement trackContainer = song.firstChildElement("trackcontainer");
 
-
     QDomNode n = trackContainer.firstChild();
     while (!n.isNull()) {
         QDomElement e = n.toElement();
         if (!e.isNull() && e.tagName() == "track") {
-
             if (e.attribute("type") == "1") {
                 QDomNodeList bbtcos = e.elementsByTagName("bbtco");
                 for (int i=0; i<bbtcos.size(); ++i) {
@@ -827,10 +504,7 @@ void MainWindow::onImportMmpClicked() {
                         }
                     }
                 }
-            }
-
-
-            else if (e.attribute("type") == "0") {
+            } else if (e.attribute("type") == "0") {
                 QString name = e.attribute("name");
                 int mIdx = -1; for(int m=0; m<NUM_MELODIC; ++m) if(m_melodic[m].name == name) mIdx = m;
 
@@ -842,7 +516,9 @@ void MainWindow::onImportMmpClicked() {
                     if (!xpressive.isNull()) {
                         m_melodic[mIdx].w1 = xpressive.hasAttribute("W1") ? xpressive.attribute("W1") : xpressive.attribute("w1");
                         m_melodic[mIdx].w2 = xpressive.hasAttribute("W2") ? xpressive.attribute("W2") : xpressive.attribute("w2");
+                        m_melodic[mIdx].w3 = xpressive.hasAttribute("W3") ? xpressive.attribute("W3") : xpressive.attribute("w3");
                         m_melodic[mIdx].o1 = xpressive.hasAttribute("O1") ? xpressive.attribute("O1") : xpressive.attribute("o1");
+                        m_melodic[mIdx].o2 = xpressive.hasAttribute("O2") ? xpressive.attribute("O2") : xpressive.attribute("o2");
 
                         m_melodic[mIdx].attack = xpressive.attribute("env_atk").toDouble();
                         m_melodic[mIdx].decay = xpressive.attribute("env_dec").toDouble();
@@ -869,8 +545,11 @@ void MainWindow::onImportMmpClicked() {
                             for (int nIdx = 0; nIdx < notes.size(); ++nIdx) {
                                 int step = notes.at(nIdx).toElement().attribute("pos").toInt() / 12;
                                 int key = 107 - notes.at(nIdx).toElement().attribute("key").toInt();
+                                int len = notes.at(nIdx).toElement().attribute("len", "12").toInt() / 12;
+
                                 if (step >= 0 && step < NUM_STEPS && key >= 0 && key < 96) {
-                                    m_melodic[mIdx].grid[bar][key][step] = true;
+                                    m_melodic[mIdx].grid[bar][key][step].active = true;
+                                    m_melodic[mIdx].grid[bar][key][step].length = len;
                                 }
                             }
                         }
@@ -880,7 +559,6 @@ void MainWindow::onImportMmpClicked() {
         }
         n = n.nextSibling();
     }
-
 
     for(int r=0; r<4; ++r) {
         for(int b=0; b<8; ++b) {
@@ -924,7 +602,6 @@ void MainWindow::onExportMmpClicked() {
 
     const int ticksPerStep = 12;
 
-
     QDomElement bbMasterTrack = doc.createElement("track");
     bbMasterTrack.setAttribute("name", "Beat/Bassline 0");
     bbMasterTrack.setAttribute("type", "1");
@@ -955,12 +632,6 @@ void MainWindow::onExportMmpClicked() {
         xpressive.setAttribute("W1", ch.w1); xpressive.setAttribute("W2", ""); xpressive.setAttribute("W3", "");
         xpressive.setAttribute("O1", ch.o1); xpressive.setAttribute("O2", "");
 
-        xpressive.setAttribute("W1sample", "AA=="); xpressive.setAttribute("W2sample", "AA=="); xpressive.setAttribute("W3sample", "AA==");
-        xpressive.setAttribute("smoothW1", "0"); xpressive.setAttribute("smoothW2", "0"); xpressive.setAttribute("smoothW3", "0");
-        xpressive.setAttribute("interpolateW1", "0"); xpressive.setAttribute("interpolateW2", "0"); xpressive.setAttribute("interpolateW3", "0");
-        xpressive.setAttribute("A1", "1"); xpressive.setAttribute("A2", "1"); xpressive.setAttribute("A3", "1");
-        xpressive.setAttribute("PAN1", "0"); xpressive.setAttribute("PAN2", "-1"); xpressive.setAttribute("RELTRANS", "50"); xpressive.setAttribute("version", "0.1");
-
         xpressive.setAttribute("env_atk", QString::number(ch.attack)); xpressive.setAttribute("env_dec", QString::number(ch.decay));
         xpressive.setAttribute("env_sus", QString::number(ch.sustain)); xpressive.setAttribute("env_rel", QString::number(ch.release));
 
@@ -970,21 +641,11 @@ void MainWindow::onExportMmpClicked() {
         instrument.appendChild(xpressive); instTrack.appendChild(instrument);
 
         QDomElement eldata = doc.createElement("eldata");
-        eldata.setAttribute("fcut", "14000"); eldata.setAttribute("ftype", "0");
-        eldata.setAttribute("fres", "0.5"); eldata.setAttribute("fwet", "0");
-
         QDomElement elvol = doc.createElement("elvol");
-        elvol.setAttribute("amt", "1");
         elvol.setAttribute("att", QString::number(ch.attack));
         elvol.setAttribute("dec", QString::number(ch.decay));
         elvol.setAttribute("sustain", QString::number(ch.sustain));
         elvol.setAttribute("rel", QString::number(ch.release));
-        elvol.setAttribute("hold", "0.5"); elvol.setAttribute("pdel", "0");
-        elvol.setAttribute("lspd", "0.1"); elvol.setAttribute("lshp", "0");
-        elvol.setAttribute("lspd_denominator", "4"); elvol.setAttribute("lspd_numerator", "4");
-        elvol.setAttribute("lspd_syncmode", "0"); elvol.setAttribute("ctlenvamt", "0");
-        elvol.setAttribute("x100", "0"); elvol.setAttribute("userwavefile", "");
-        elvol.setAttribute("lpdel", "0"); elvol.setAttribute("lamt", "0"); elvol.setAttribute("latt", "0");
 
         eldata.appendChild(elvol); instTrack.appendChild(eldata);
 
@@ -1015,7 +676,6 @@ void MainWindow::onExportMmpClicked() {
         }
     }
 
-
     for (int m = 0; m < NUM_MELODIC; ++m) {
         MelodicConfig& ch = m_melodic[m];
         QDomElement track = doc.createElement("track"); track.setAttribute("name", ch.name); track.setAttribute("type", "0");
@@ -1023,20 +683,13 @@ void MainWindow::onExportMmpClicked() {
 
         QDomElement instTrack = doc.createElement("instrumenttrack");
         instTrack.setAttribute("vol", "100");
-        instTrack.setAttribute("pan", "0");
         track.appendChild(instTrack);
 
         QDomElement instrument = doc.createElement("instrument"); instrument.setAttribute("name", "xpressive");
 
         QDomElement xpressive = doc.createElement("xpressive");
-        xpressive.setAttribute("W1", ch.w1); xpressive.setAttribute("W2", ch.w2); xpressive.setAttribute("W3", "");
-        xpressive.setAttribute("O1", ch.o1); xpressive.setAttribute("O2", "");
-
-        xpressive.setAttribute("W1sample", "AA=="); xpressive.setAttribute("W2sample", "AA=="); xpressive.setAttribute("W3sample", "AA==");
-        xpressive.setAttribute("smoothW1", "0"); xpressive.setAttribute("smoothW2", "0"); xpressive.setAttribute("smoothW3", "0");
-        xpressive.setAttribute("interpolateW1", "0"); xpressive.setAttribute("interpolateW2", "0"); xpressive.setAttribute("interpolateW3", "0");
-        xpressive.setAttribute("A1", "1"); xpressive.setAttribute("A2", "1"); xpressive.setAttribute("A3", "1");
-        xpressive.setAttribute("PAN1", "0"); xpressive.setAttribute("PAN2", "-1"); xpressive.setAttribute("RELTRANS", "50"); xpressive.setAttribute("version", "0.1");
+        xpressive.setAttribute("W1", ch.w1); xpressive.setAttribute("W2", ch.w2); xpressive.setAttribute("W3", ch.w3);
+        xpressive.setAttribute("O1", ch.o1); xpressive.setAttribute("O2", ch.o2);
 
         xpressive.setAttribute("env_atk", QString::number(ch.attack)); xpressive.setAttribute("env_dec", QString::number(ch.decay));
         xpressive.setAttribute("env_sus", QString::number(ch.sustain)); xpressive.setAttribute("env_rel", QString::number(ch.release));
@@ -1047,21 +700,11 @@ void MainWindow::onExportMmpClicked() {
         instrument.appendChild(xpressive); instTrack.appendChild(instrument);
 
         QDomElement eldata = doc.createElement("eldata");
-        eldata.setAttribute("fcut", "14000"); eldata.setAttribute("ftype", "0");
-        eldata.setAttribute("fres", "0.5"); eldata.setAttribute("fwet", "0");
-
         QDomElement elvol = doc.createElement("elvol");
-        elvol.setAttribute("amt", "1");
         elvol.setAttribute("att", QString::number(ch.attack));
         elvol.setAttribute("dec", QString::number(ch.decay));
         elvol.setAttribute("sustain", QString::number(ch.sustain));
         elvol.setAttribute("rel", QString::number(ch.release));
-        elvol.setAttribute("hold", "0.5"); elvol.setAttribute("pdel", "0");
-        elvol.setAttribute("lspd", "0.1"); elvol.setAttribute("lshp", "0");
-        elvol.setAttribute("lspd_denominator", "4"); elvol.setAttribute("lspd_numerator", "4");
-        elvol.setAttribute("lspd_syncmode", "0"); elvol.setAttribute("ctlenvamt", "0");
-        elvol.setAttribute("x100", "0"); elvol.setAttribute("userwavefile", "");
-        elvol.setAttribute("lpdel", "0"); elvol.setAttribute("lamt", "0"); elvol.setAttribute("latt", "0");
 
         eldata.appendChild(elvol); instTrack.appendChild(eldata);
 
@@ -1071,12 +714,11 @@ void MainWindow::onExportMmpClicked() {
             int p = patIdx - 1;
 
             bool hasNotes = false;
-            for (int key = 0; key < 96; ++key) { for (int c = 0; c < 16; ++c) { if (ch.grid[p][key][c]) hasNotes = true; } }
+            for (int key = 0; key < 96; ++key) { for (int c = 0; c < 16; ++c) { if (ch.grid[p][key][c].active) hasNotes = true; } }
             if (!hasNotes) continue;
 
             QDomElement pattern = doc.createElement("pattern");
             pattern.setAttribute("type", "1");
-
             pattern.setAttribute("pos", QString::number(b * 16 * ticksPerStep));
             pattern.setAttribute("steps", "16");
             pattern.setAttribute("len", QString::number(16 * ticksPerStep));
@@ -1084,11 +726,10 @@ void MainWindow::onExportMmpClicked() {
 
             for (int key = 0; key < 96; ++key) {
                 for (int c = 0; c < 16; ++c) {
-                    if (ch.grid[p][key][c]) {
+                    if (ch.grid[p][key][c].active) {
                         QDomElement note = doc.createElement("note");
-
                         note.setAttribute("pos", QString::number(c * ticksPerStep));
-                        note.setAttribute("len", QString::number(ticksPerStep));
+                        note.setAttribute("len", QString::number(ch.grid[p][key][c].length * ticksPerStep));
                         note.setAttribute("key", QString::number(107 - key));
                         note.setAttribute("vol", QString::number(int(ch.vol * 100)));
                         pattern.appendChild(note);

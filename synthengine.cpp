@@ -62,7 +62,7 @@ qint64 SynthEngine::readData(char *data, qint64 maxlen) {
     bool isFloat = (m_format.sampleFormat() == QAudioFormat::Float);
     bool isInt16 = (m_format.sampleFormat() == QAudioFormat::Int16);
 
-    // If neither format is met, return silence
+
     if (!isFloat && !isInt16) return maxlen;
 
     int bytesPerSample = isFloat ? sizeof(float) : sizeof(qint16);
@@ -86,7 +86,7 @@ qint64 SynthEngine::readData(char *data, qint64 maxlen) {
             if (isFloat) {
                 *bufferF32++ = sample;
             } else {
-                // Clamp and convert floating point to 16-bit integer for Android
+
                 float clamped = std::max(-1.0f, std::min(1.0f, sample));
                 *bufferI16++ = static_cast<qint16>(clamped * 32767.0f);
             }
