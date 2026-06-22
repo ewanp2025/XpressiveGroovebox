@@ -13,16 +13,94 @@
 #include <QScrollBar>
 #include <QTimer>
 #include <QFrame>
+#include <QMutexLocker>
 #include <cmath>
+#include <memory>
+#include <string>
+#include <functional>
+#include <stdexcept>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
 
+namespace XpressiveParser {
+struct Env { double t=0, tempo=120, srate=44100, f=440; };
+class Node { public: virtual ~Node()=default; virtual double eval(Env& env)=0; };
+
+enum Token { TOK_EOF, TOK_NUM, TOK_ID, TOK_PLUS, TOK_MINUS, TOK_MUL, TOK_DIV, TOK_LPAREN, TOK_RPAREN, TOK_COMMA, TOK_EQ, TOK_NEQ, TOK_LT, TOK_GT, TOK_LTE, TOK_GTE, TOK_OR, TOK_AND };
+
+struct Lexer {
+    const char* p; Token curTok; double numVal; std::string idStr;
+    Lexer(const char* str) : p(str) { next(); }
+    void next() {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (!*p) { curTok = TOK_EOF; return; }
+        if (isdigit(*p) || *p == '.') { char* end; numVal = strtod(p, &end); p = end; curTok = TOK_NUM; return; }
+        if (isalpha(*p)) { idStr.clear(); while (isalnum(*p) || *p == '_') idStr += *p++; curTok = TOK_ID; return; }
+        char c = *p++;
+        if (c == '=') { if (*p == '=') { p++; curTok = TOK_EQ; } else curTok = TOK_EOF; }
+        else if (c == '!') { if (*p == '=') { p++; curTok = TOK_NEQ; } else curTok = TOK_EOF; }
+        else if (c == '<') { if (*p == '=') { p++; curTok = TOK_LTE; } else curTok = TOK_LT; }
+        else if (c == '>') { if (*p == '=') { p++; curTok = TOK_GTE; } else curTok = TOK_GT; }
+        else if (c == '|') { curTok = TOK_OR; } else if (c == '&') { curTok = TOK_AND; }
+        else if (c == '+') curTok = TOK_PLUS; else if (c == '-') curTok = TOK_MINUS;
+        else if (c == '*') curTok = TOK_MUL; else if (c == '/') curTok = TOK_DIV;
+        else if (c == '(') curTok = TOK_LPAREN; else if (c == ')') curTok = TOK_RPAREN;
+        else if (c == ',') curTok = TOK_COMMA; else curTok = TOK_EOF;
+    }
+};
+
+class NumNode : public Node { double val; public: NumNode(double v):val(v){} double eval(Env&) override { return val; } };
+class VarNode : public Node { std::string name; public: VarNode(std::string n):name(n){} double eval(Env& e) override { if(name=="t") return e.t; if(name=="tempo") return e.tempo; if(name=="srate") return e.srate; return e.f; } };
+class UnaryNode : public Node { std::unique_ptr<Node> n; std::function<double(double)> op; public: UnaryNode(std::unique_ptr<Node> n, std::function<double(double)> op):n(std::move(n)),op(op){} double eval(Env& e) override { return op(n->eval(e)); } };
+class FuncNode : public Node { std::unique_ptr<Node> n; std::function<double(double)> op; public: FuncNode(std::unique_ptr<Node> n, std::function<double(double)> op):n(std::move(n)),op(op){} double eval(Env& e) override { return op(n->eval(e)); } };
+class BinFuncNode : public Node { std::unique_ptr<Node> l,r; std::function<double(double,double)> op; public: BinFuncNode(std::unique_ptr<Node> l, std::unique_ptr<Node> r, std::function<double(double,double)> op):l(std::move(l)),r(std::move(r)),op(op){} double eval(Env& e) override { return op(l->eval(e), r->eval(e)); } };
+class BinOpNode : public Node { std::unique_ptr<Node> l,r; Token op; public: BinOpNode(std::unique_ptr<Node> l, std::unique_ptr<Node> r, Token op):l(std::move(l)),r(std::move(r)),op(op){} double eval(Env& e) override { double a=l->eval(e), b=r->eval(e); switch(op){ case TOK_PLUS: return a+b; case TOK_MINUS: return a-b; case TOK_MUL: return a*b; case TOK_DIV: return b==0?0:a/b; case TOK_EQ: return a==b?1:0; case TOK_NEQ: return a!=b?1:0; case TOK_LT: return a<b?1:0; case TOK_GT: return a>b?1:0; case TOK_LTE: return a<=b?1:0; case TOK_GTE: return a>=b?1:0; case TOK_OR: return (a!=0||b!=0)?1:0; case TOK_AND: return (a!=0&&b!=0)?1:0; default: return 0; } } };
+
+
+class IntegrateNode : public Node { std::unique_ptr<Node> n; double accum=0; public: IntegrateNode(std::unique_ptr<Node> n):n(std::move(n)){} double eval(Env& e) override { accum += n->eval(e) / e.srate; return accum; } };
+
+std::unique_ptr<Node> parseExpr(Lexer& lex);
+std::unique_ptr<Node> parsePrimary(Lexer& lex) {
+    if (lex.curTok == TOK_NUM) { auto n = std::make_unique<NumNode>(lex.numVal); lex.next(); return n; }
+    if (lex.curTok == TOK_ID) {
+        std::string id = lex.idStr; lex.next();
+        if (id == "t" || id == "tempo" || id == "srate" || id == "f") return std::make_unique<VarNode>(id);
+        if (lex.curTok == TOK_LPAREN) {
+            lex.next(); auto a1 = parseExpr(lex); std::unique_ptr<Node> a2;
+            if (lex.curTok == TOK_COMMA) { lex.next(); a2 = parseExpr(lex); }
+            if (lex.curTok != TOK_RPAREN) throw std::runtime_error("Expected ')'");
+            lex.next();
+            if (id == "mod") return std::make_unique<BinFuncNode>(std::move(a1), std::move(a2), [](double a, double b){ return b==0?0:std::fmod(a,b); });
+            if (id == "sinew") return std::make_unique<FuncNode>(std::move(a1), [](double x){ return std::sin(2.0*M_PI*x); });
+            if (id == "saww") return std::make_unique<FuncNode>(std::move(a1), [](double x){ return 2.0*std::fmod(x,1.0)-1.0; });
+            if (id == "squarew") return std::make_unique<FuncNode>(std::move(a1), [](double x){ return std::fmod(x,1.0)<0.5?1.0:-1.0; });
+            if (id == "exp") return std::make_unique<FuncNode>(std::move(a1), [](double x){ return std::exp(x); });
+            if (id == "floor") return std::make_unique<FuncNode>(std::move(a1), [](double x){ return std::floor(x); });
+            if (id == "randv") return std::make_unique<FuncNode>(std::move(a1), [](double){ return (static_cast<double>(rand())/RAND_MAX)*2.0-1.0; });
+            if (id == "integrate") return std::make_unique<IntegrateNode>(std::move(a1));
+        }
+        throw std::runtime_error("Unknown function: " + id);
+    }
+    if (lex.curTok == TOK_LPAREN) { lex.next(); auto n = parseExpr(lex); if (lex.curTok != TOK_RPAREN) throw std::runtime_error("Expected ')'"); lex.next(); return n; }
+    throw std::runtime_error("Syntax error");
+}
+std::unique_ptr<Node> parseUnary(Lexer& lex) { if(lex.curTok==TOK_MINUS){ lex.next(); return std::make_unique<UnaryNode>(parsePrimary(lex), [](double x){return -x;}); } return parsePrimary(lex); }
+std::unique_ptr<Node> parseMulDiv(Lexer& lex) { auto l=parseUnary(lex); while(lex.curTok==TOK_MUL||lex.curTok==TOK_DIV){ Token op=lex.curTok; lex.next(); l=std::make_unique<BinOpNode>(std::move(l), parseUnary(lex), op); } return l; }
+std::unique_ptr<Node> parseAddSub(Lexer& lex) { auto l=parseMulDiv(lex); while(lex.curTok==TOK_PLUS||lex.curTok==TOK_MINUS){ Token op=lex.curTok; lex.next(); l=std::make_unique<BinOpNode>(std::move(l), parseMulDiv(lex), op); } return l; }
+std::unique_ptr<Node> parseRel(Lexer& lex) { auto l=parseAddSub(lex); while(lex.curTok==TOK_LT||lex.curTok==TOK_GT||lex.curTok==TOK_LTE||lex.curTok==TOK_GTE){ Token op=lex.curTok; lex.next(); l=std::make_unique<BinOpNode>(std::move(l), parseAddSub(lex), op); } return l; }
+std::unique_ptr<Node> parseEq(Lexer& lex) { auto l=parseRel(lex); while(lex.curTok==TOK_EQ||lex.curTok==TOK_NEQ){ Token op=lex.curTok; lex.next(); l=std::make_unique<BinOpNode>(std::move(l), parseRel(lex), op); } return l; }
+std::unique_ptr<Node> parseAnd(Lexer& lex) { auto l=parseEq(lex); while(lex.curTok==TOK_AND){ lex.next(); l=std::make_unique<BinOpNode>(std::move(l), parseEq(lex), TOK_AND); } return l; }
+std::unique_ptr<Node> parseExpr(Lexer& lex) { auto l=parseAnd(lex); while(lex.curTok==TOK_OR){ lex.next(); l=std::make_unique<BinOpNode>(std::move(l), parseAnd(lex), TOK_OR); } return l; }
+std::unique_ptr<Node> parse(const std::string& str) { Lexer lex(str.c_str()); return parseExpr(lex); }
+}
+
+
 ChannelConfigDialog::ChannelConfigDialog(ChannelConfig& config, QWidget *parent) : QDialog(parent) {
     setWindowTitle("Configure " + config.name);
-    setMinimumWidth(300); // Narrower for mobile
+    setMinimumWidth(300);
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     QFormLayout* form = new QFormLayout();
 
@@ -87,15 +165,12 @@ void MelodicConfigDialog::saveToConfig(MelodicConfig& config) {
 }
 
 
-PianoRollDialog::PianoRollDialog(MelodicConfig& config, QWidget *parent) : QDialog(parent) {
-    setWindowTitle(config.name + " - Piano Roll");
-
-
+PianoRollDialog::PianoRollDialog(bool (&pattern)[96][16], const QString& title, QWidget *parent) : QDialog(parent) {
+    setWindowTitle(title);
 
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(2, 2, 2, 2);
     mainLayout->setSpacing(2);
-
 
     QPushButton* btnSave = new QPushButton("💾 Save Pattern & Close");
     btnSave->setStyleSheet("background-color: #7a00cc; color: white; padding: 10px; font-weight: bold; border-radius: 4px;");
@@ -133,7 +208,7 @@ PianoRollDialog::PianoRollDialog(MelodicConfig& config, QWidget *parent) : QDial
             m_btnGrid[r][c] = new QPushButton();
             m_btnGrid[r][c]->setFixedSize(14, 30);
             m_btnGrid[r][c]->setCheckable(true);
-            m_btnGrid[r][c]->setChecked(config.grid[r][c]);
+            m_btnGrid[r][c]->setChecked(pattern[r][c]);
 
             QString bg = (c / 4) % 2 == 0 ? "#2a2a2a" : "#333333";
             m_btnGrid[r][c]->setStyleSheet(QString(
@@ -150,7 +225,6 @@ PianoRollDialog::PianoRollDialog(MelodicConfig& config, QWidget *parent) : QDial
 
     setStyleSheet("QDialog { background-color: #1e1e1e; }");
 
-
     setWindowState(Qt::WindowMaximized);
 
     QTimer::singleShot(50, [scrollArea, gridWidget]() {
@@ -159,10 +233,10 @@ PianoRollDialog::PianoRollDialog(MelodicConfig& config, QWidget *parent) : QDial
     });
 }
 
-void PianoRollDialog::saveToConfig(MelodicConfig& config) {
+void PianoRollDialog::saveToGrid(bool (&pattern)[96][16]) {
     for(int r=0; r<96; ++r) {
         for(int c=0; c<16; ++c) {
-            config.grid[r][c] = m_btnGrid[r][c]->isChecked();
+            pattern[r][c] = m_btnGrid[r][c]->isChecked();
         }
     }
 }
@@ -172,16 +246,22 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     m_synthEngine = new SynthEngine(this);
 
     setWindowTitle("Xpressive Groovebox (Mobile)");
-    resize(350, 700);
+    resize(850, 500);
 
+    m_channels[0].name = "Kick";
+    m_channels[0].w1 = "sinew(t)";
+    m_channels[0].o1 = "clamp(-1.0, sinew(40 * t) * exp(-t * 60) + sinew(40 * t) * exp(-t * 3) * 0.3, 1.0)";
+    m_channels[0].attack = 0.0; m_channels[0].decay = 0.44; m_channels[0].sustain = 0.328; m_channels[0].release = 0.856; m_channels[0].vol = 1.0;
 
-    m_channels[0].name = "Kick";  m_channels[0].w1 = "sinew(t)"; m_channels[0].o1 = "W1(integrate(f * exp(-t*15)))"; m_channels[0].decay = 0.3; m_channels[0].sustain = 0; m_channels[0].vol = 1.0;
-    m_channels[1].name = "Snar"; m_channels[1].w1 = "randv(t*srate)"; m_channels[1].o1 = "W1(integrate(f)) * exp(-t*10)"; m_channels[1].decay = 0.2; m_channels[1].sustain = 0; m_channels[1].vol = 0.8;
+    m_channels[1].name = "Snare";
+    m_channels[1].w1 = "sinew(t)";
+    m_channels[1].o1 = "W1(integrate(f * (180.0 / 440.0))) * exp(-t * 6.0) + randv(t * srate) * exp(-t * 12.0)";
+    m_channels[1].attack = 0.0; m_channels[1].decay = 0.5; m_channels[1].sustain = 0.5; m_channels[1].release = 0.1; m_channels[1].vol = 0.8;
+
     m_channels[2].name = "CHat";  m_channels[2].w1 = "randv(t*srate)"; m_channels[2].o1 = "W1(integrate(f))"; m_channels[2].decay = 0.05; m_channels[2].sustain = 0; m_channels[2].vol = 0.5;
     m_channels[3].name = "OHat";  m_channels[3].w1 = "randv(t*srate)"; m_channels[3].o1 = "W1(integrate(f))"; m_channels[3].decay = 0.3; m_channels[3].sustain = 0; m_channels[3].vol = 0.6;
     m_channels[4].name = "Prc1"; m_channels[4].w1 = "squarew(t)"; m_channels[4].o1 = "W1(integrate(f)) * exp(-t*20)"; m_channels[4].decay = 0.1; m_channels[4].vol = 0.4;
     m_channels[5].name = "Prc2";  m_channels[5].w1 = "saww(t)"; m_channels[5].o1 = "W1(integrate(f*0.5))"; m_channels[5].decay = 0.4; m_channels[5].sustain = 0.5; m_channels[5].vol = 0.6;
-
 
     m_melodic[0].name = "Bass"; m_melodic[0].w1 = "saww(t)"; m_melodic[0].w2 = "squarew(t)"; m_melodic[0].o1 = "(W1(integrate(f)) + W2(integrate(f*1.005)))*0.5"; m_melodic[0].decay = 0.4; m_melodic[0].sustain = 0.1;
     m_melodic[1].name = "Synth"; m_melodic[1].w1 = "sinew(t)"; m_melodic[1].w2 = "saww(t)"; m_melodic[1].o1 = "(W1(integrate(f)) + W2(integrate(f*2.0)))*0.5"; m_melodic[1].decay = 0.8; m_melodic[1].sustain = 0.6;
@@ -195,7 +275,6 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::setupUI() {
-
     QScrollArea* mainScroll = new QScrollArea(this);
     mainScroll->setWidgetResizable(true);
     mainScroll->setStyleSheet("QScrollArea { border: none; background-color: transparent; }");
@@ -207,7 +286,6 @@ void MainWindow::setupUI() {
     mainLayout->setContentsMargins(4, 4, 4, 4);
     mainLayout->setSpacing(4);
 
-
     centralWidget->setStyleSheet(R"(
         QWidget { background-color: #1e1e1e; color: #e0e0e0; font-family: "Segoe UI", sans-serif; font-size: 11px; }
         QGroupBox { border: 1px solid #444; border-radius: 4px; font-weight: bold; margin-top: 1ex; padding: 2px; }
@@ -216,31 +294,45 @@ void MainWindow::setupUI() {
         QCheckBox::indicator:checked { background: #00ffff; border: 1px solid #ffffff; }
         QPushButton { background-color: #333; border: 1px solid #555; padding: 6px 2px; color: #fff; border-radius: 3px; font-weight: bold; }
         QPushButton:hover, QPushButton:pressed { background-color: #444; border: 1px solid #00ffff; }
-        QSpinBox { background-color: #333; color: white; border: 1px solid #555; padding: 2px; min-width: 45px; min-height: 25px; }
+        QSpinBox, QComboBox, QLineEdit { background-color: #333; color: white; border: 1px solid #555; padding: 2px; min-height: 25px; }
     )");
-
 
     QHBoxLayout* topLayout = new QHBoxLayout();
     m_spinBpm = new QSpinBox();
     m_spinBpm->setRange(60, 300);
     m_spinBpm->setValue(120);
+    connect(m_spinBpm, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::updatePlaybackState);
+
     topLayout->addWidget(new QLabel("BPM:"));
     topLayout->addWidget(m_spinBpm);
 
-    m_btnPlay = new QPushButton("▶ Play");
-    m_btnPlay->setStyleSheet("background-color: #005577; color: white;");
+    m_btnPlay = new QPushButton("▶ Play Sequence");
+    m_btnPlay->setStyleSheet("background-color: #005577; color: white; padding: 5px 15px;");
 
 
-    m_btnExport = new QPushButton("Export .mmp");
+    m_txtTestString = new QLineEdit();
+    m_txtTestString->setPlaceholderText("Paste Custom Formula Here...");
+    m_txtTestString->setText("sinew(integrate(60*(1+2*exp(-mod(t,15/tempo)*100)))) * exp(-mod(t,15/tempo)*15) * (mod(floor(mod(t*(tempo/15),16)),4)==0) * (floor(mod(t*(tempo/15),256))<128 | floor(mod(t*(tempo/15),256))>=192) + (sinew(integrate(200))*exp(-mod(t,15/tempo)*50) + 0.6*randv(t*srate)*exp(-mod(t,15/tempo)*30)) * ((floor(mod(t*(tempo/15),16))==4 | floor(mod(t*(tempo/15),16))==12) * (floor(mod(t*(tempo/15),256))<128 | floor(mod(t*(tempo/15),256))>=160) | (floor(mod(t*(tempo/15),256))>=176 & floor(mod(t*(tempo/15),256))<192)) + 0.15*randv(t*srate)*exp(-mod(t,15/tempo)*40) + 0.3*randv(t*srate)*exp(-mod(t,15/tempo)*15) * (floor(mod(t*(tempo/15),16))==2 | floor(mod(t*(tempo/15),16))==6 | floor(mod(t*(tempo/15),16))==10 | floor(mod(t*(tempo/15),16))==14)");
+
+    m_btnTestString = new QPushButton("🧪 Test A-4");
+    m_btnTestString->setStyleSheet("background-color: #5500aa; color: white; padding: 5px 15px;");
+
+    m_btnImport = new QPushButton("📂 Import");
+    m_btnImport->setStyleSheet("background-color: #775500; color: white;");
+
+    m_btnExport = new QPushButton("💾 Export");
     m_btnExport->setStyleSheet("background-color: #005533; color: white;");
 
     topLayout->addWidget(m_btnPlay);
+    topLayout->addWidget(m_txtTestString);
+    topLayout->addWidget(m_btnTestString);
+    topLayout->addWidget(m_btnImport);
     topLayout->addWidget(m_btnExport);
-    topLayout->addStretch();
     mainLayout->addLayout(topLayout);
 
+    QHBoxLayout* middleLayout = new QHBoxLayout();
 
-    QGroupBox* drumBox = new QGroupBox("Percussion");
+    QGroupBox* drumBox = new QGroupBox("Percussion (Global)");
     QVBoxLayout* drumBoxLayout = new QVBoxLayout(drumBox);
     drumBoxLayout->setContentsMargins(2, 2, 2, 2);
 
@@ -253,7 +345,6 @@ void MainWindow::setupUI() {
     QGridLayout* gridLayout = new QGridLayout(gridContainer);
     gridLayout->setSpacing(1);
     gridLayout->setContentsMargins(0, 0, 0, 0);
-
     gridLayout->setAlignment(Qt::AlignLeft);
 
     for (int r = 0; r < NUM_CHANNELS; ++r) {
@@ -264,6 +355,7 @@ void MainWindow::setupUI() {
 
         for (int c = 0; c < NUM_STEPS; ++c) {
             m_grid[r][c] = new QCheckBox();
+            connect(m_grid[r][c], &QCheckBox::clicked, this, &MainWindow::updatePlaybackState);
             gridLayout->addWidget(m_grid[r][c], r, c + 1);
 
             if ((c + 1) % 4 == 0 && c != 15) {
@@ -276,8 +368,36 @@ void MainWindow::setupUI() {
     }
     drumScrollArea->setWidget(gridContainer);
     drumBoxLayout->addWidget(drumScrollArea);
-    mainLayout->addWidget(drumBox);
+    middleLayout->addWidget(drumBox);
 
+    QGroupBox* arrangerBox = new QGroupBox("Song Arranger (Click to Cycle Patterns)");
+    arrangerBox->setStyleSheet("QGroupBox::title { color: #ffff00; }");
+    QGridLayout* arrangerLayout = new QGridLayout(arrangerBox);
+    arrangerLayout->setSpacing(4);
+    arrangerLayout->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+
+    QStringList trackNames = {"Drums", "Bass", "Synth", "Pad"};
+    for (int row = 0; row < 4; ++row) {
+        QLabel* trackLabel = new QLabel(trackNames[row]);
+        trackLabel->setFixedWidth(40);
+        arrangerLayout->addWidget(trackLabel, row, 0);
+
+        for (int bar = 0; bar < 8; ++bar) {
+            m_arrangerGrid[row][bar] = new QPushButton("");
+            m_arrangerGrid[row][bar]->setFixedSize(25, 25);
+            m_arrangerGrid[row][bar]->setStyleSheet("QPushButton { background-color: #333; border: 1px solid #555; border-radius: 3px; }");
+
+            connect(m_arrangerGrid[row][bar], &QPushButton::clicked, this, [this, row, bar]() {
+                onArrangerClicked(row, bar);
+            });
+            arrangerLayout->addWidget(m_arrangerGrid[row][bar], row, bar + 1);
+        }
+    }
+
+    onArrangerClicked(0, 0); onArrangerClicked(1, 0); onArrangerClicked(2, 0); onArrangerClicked(3, 0);
+
+    middleLayout->addWidget(arrangerBox);
+    mainLayout->addLayout(middleLayout);
 
     QGroupBox* melodicBox = new QGroupBox("Melodic Synths");
     melodicBox->setStyleSheet("QGroupBox::title { color: #cc55ff; }");
@@ -292,42 +412,113 @@ void MainWindow::setupUI() {
         QLabel* lblName = new QLabel("<b>" + m_melodic[m].name + "</b>");
         lblName->setFixedWidth(45);
 
-        QPushButton* btnCfg = new QPushButton("⚙️"); // Just icon to save space
+        QPushButton* btnCfg = new QPushButton("⚙️");
         btnCfg->setFixedWidth(30);
         connect(btnCfg, &QPushButton::clicked, this, [this, m]() { onMelodicConfigClicked(m); });
 
-        QPushButton* btnRoll = new QPushButton("🎹 Roll"); // Short text
+        m_comboEditBar[m] = new QComboBox();
+        m_comboEditBar[m]->setFixedWidth(85);
+        for(int b=1; b<=8; ++b) m_comboEditBar[m]->addItem(QString("Pattern %1").arg(b));
+
+        QPushButton* btnRoll = new QPushButton("🎹 Roll");
         btnRoll->setStyleSheet("background-color: #4a0077; font-weight: bold;");
         connect(btnRoll, &QPushButton::clicked, this, [this, m]() { onPianoRollClicked(m); });
 
         row->addWidget(lblName);
         row->addWidget(btnCfg);
+        row->addWidget(m_comboEditBar[m]);
         row->addWidget(btnRoll);
         melodicLayout->addLayout(row);
     }
     mainLayout->addWidget(melodicBox);
     mainLayout->addStretch();
 
-
     m_txtPreview = new QTextEdit();
     m_txtPreview->hide();
     connect(m_btnPlay, &QPushButton::clicked, this, &MainWindow::onPlayClicked);
+    connect(m_btnTestString, &QPushButton::clicked, this, &MainWindow::onTestStringClicked);
     connect(m_btnExport, &QPushButton::clicked, this, &MainWindow::onExportMmpClicked);
+    connect(m_btnImport, &QPushButton::clicked, this, &MainWindow::onImportMmpClicked);
+
+    updatePlaybackState();
+}
+
+void MainWindow::onArrangerClicked(int row, int bar) {
+    if (row == 0) {
+        m_arrangerState[row][bar] = (m_arrangerState[row][bar] == 0) ? 1 : 0;
+    } else {
+        m_arrangerState[row][bar] = (m_arrangerState[row][bar] + 1) % 9;
+    }
+
+    QPushButton* btn = m_arrangerGrid[row][bar];
+    if (m_arrangerState[row][bar] == 0) {
+        btn->setText("");
+        btn->setStyleSheet("QPushButton { background-color: #333; border: 1px solid #555; border-radius: 3px; }");
+    } else {
+        if (row == 0) btn->setText("D");
+        else btn->setText(QString::number(m_arrangerState[row][bar]));
+        btn->setStyleSheet("QPushButton { background-color: #ffff00; color: black; font-weight: bold; border: 1px solid #fff; border-radius: 3px; }");
+    }
+    updatePlaybackState();
+}
+
+void MainWindow::updatePlaybackState() {
+    QMutexLocker locker(&m_playState.mutex);
+    m_playState.bpm = m_spinBpm->value();
+
+    for (int r = 0; r < NUM_CHANNELS; ++r) {
+        m_playState.drums[r].a = m_channels[r].attack;
+        m_playState.drums[r].d = m_channels[r].decay;
+        m_playState.drums[r].s = m_channels[r].sustain;
+        m_playState.drums[r].vol = m_channels[r].vol;
+        m_playState.drums[r].baseF = (r==0)?55.0 : (r==1)?200.0 : (r==2||r==3)?8000.0 : (r==4)?440.0 : 110.0;
+        m_playState.drums[r].isK = (r==0);
+        QString w1 = m_channels[r].w1.toLower();
+        m_playState.drums[r].wType = w1.contains("sin") ? 0 : w1.contains("rand") ? 1 : w1.contains("saw") ? 2 : 3;
+
+        for (int c = 0; c < NUM_STEPS; ++c) {
+            m_playState.drumSteps[r][c] = m_grid[r][c]->isChecked();
+        }
+    }
+
+    for (int m = 0; m < NUM_MELODIC; ++m) {
+        m_playState.synths[m].a = m_melodic[m].attack;
+        m_playState.synths[m].d = m_melodic[m].decay;
+        m_playState.synths[m].s = m_melodic[m].sustain;
+        m_playState.synths[m].vol = m_melodic[m].vol;
+        QString w1 = m_melodic[m].w1.toLower();
+        m_playState.synths[m].w1Type = w1.contains("sin") ? 0 : w1.contains("saw") ? 2 : 3;
+
+        for (int b = 0; b < 8; ++b) {
+            for (int key = 0; key < 96; ++key) {
+                for (int c = 0; c < NUM_STEPS; ++c) {
+                    m_playState.synthGrid[m][b][key][c] = m_melodic[m].grid[b][key][c];
+                }
+            }
+        }
+    }
+
+    for (int t = 0; t < 4; ++t) {
+        for (int b = 0; b < 8; ++b) {
+            m_playState.arranger[t][b] = m_arrangerState[t][b];
+        }
+    }
 }
 
 void MainWindow::onConfigClicked(int index) {
     ChannelConfigDialog dlg(m_channels[index], this);
-    if (dlg.exec() == QDialog::Accepted) dlg.saveToConfig(m_channels[index]);
+    if (dlg.exec() == QDialog::Accepted) { dlg.saveToConfig(m_channels[index]); updatePlaybackState(); }
 }
 
 void MainWindow::onMelodicConfigClicked(int index) {
     MelodicConfigDialog dlg(m_melodic[index], this);
-    if (dlg.exec() == QDialog::Accepted) dlg.saveToConfig(m_melodic[index]);
+    if (dlg.exec() == QDialog::Accepted) { dlg.saveToConfig(m_melodic[index]); updatePlaybackState(); }
 }
 
 void MainWindow::onPianoRollClicked(int index) {
-    PianoRollDialog dlg(m_melodic[index], this);
-    if (dlg.exec() == QDialog::Accepted) dlg.saveToConfig(m_melodic[index]);
+    int pat = m_comboEditBar[index]->currentIndex();
+    PianoRollDialog dlg(m_melodic[index].grid[pat], m_melodic[index].name + " - Pattern " + QString::number(pat+1), this);
+    if (dlg.exec() == QDialog::Accepted) { dlg.saveToGrid(m_melodic[index].grid[pat]); updatePlaybackState(); }
 }
 
 QString MainWindow::getAdsrString(double a, double d, double s, double r) {
@@ -340,10 +531,8 @@ QString MainWindow::getAdsrString(double a, double d, double s, double r) {
 QString MainWindow::generateMathExpression() {
     double bps = m_spinBpm->value() / 60.0;
     double stepsPerSec = bps * 4.0;
-
-    QString finalMath = QString("var stepRate = %1;\nvar globalStep = floor(t * stepRate);\nvar seqStep = mod(globalStep, 16);\nvar lt = mod(t, 1.0 / stepRate);\n\n").arg(stepsPerSec);
+    QString finalMath = QString("var srate = 44100.0;\nvar stepRate = %1;\nvar globalStep = floor(t * stepRate);\nvar seqStep = mod(globalStep, 16);\nvar currentBar = mod(floor(globalStep / 16), 8);\nvar lt = mod(t, 1.0 / stepRate);\n\n").arg(stepsPerSec);
     QString mix = "0";
-
 
     for (int r = 0; r < NUM_CHANNELS; ++r) {
         QString stepGate = ""; bool hasSteps = false;
@@ -354,143 +543,136 @@ QString MainWindow::generateMathExpression() {
                 hasSteps = true;
             }
         }
+        QString arrGate = "";
+        for (int b = 0; b < 8; ++b) if(m_arrangerState[0][b] == 1) arrGate += QString("(currentBar==%1)+").arg(b);
+        if(arrGate.endsWith("+")) arrGate.chop(1);
+        if(arrGate.isEmpty()) arrGate = "0";
+
         if (hasSteps) {
             ChannelConfig& ch = m_channels[r];
             QString chW1 = ch.w1; chW1.replace("t", "lt");
             QString chO1 = ch.o1; chO1.replace("W1", "(" + chW1 + ")"); chO1.replace("t", "lt");
             QString adsr = getAdsrString(ch.attack, ch.decay, ch.sustain, ch.release);
-            finalMath += QString("// Drum %1 (%2)\nvar gate_d%1 = (%3);\nvar out_d%1 = (%4) * %5 * %6 * gate_d%1;\n\n")
-                             .arg(r).arg(ch.name).arg(stepGate).arg(chO1).arg(adsr).arg(ch.vol);
+            finalMath += QString("// Drum %1 (%2)\nvar gate_d%1 = (%3) * (%7);\nvar out_d%1 = (%4) * %5 * %6 * gate_d%1;\n\n").arg(r).arg(ch.name).arg(stepGate).arg(chO1).arg(adsr).arg(ch.vol).arg(arrGate);
             mix += QString(" + out_d%1").arg(r);
         }
     }
-
 
     for (int m = 0; m < NUM_MELODIC; ++m) {
         MelodicConfig& ch = m_melodic[m];
         bool trackUsed = false;
 
-        for (int key = 0; key < 96; ++key) {
-            QString stepGate = ""; bool hasSteps = false;
-            for (int c = 0; c < NUM_STEPS; ++c) {
-                if (ch.grid[key][c]) {
-                    if (hasSteps) stepGate += " + ";
-                    stepGate += QString("(seqStep == %1)").arg(c);
-                    hasSteps = true;
+        for (int b = 0; b < 8; ++b) {
+            int patIdx = m_arrangerState[m+1][b];
+            if (patIdx == 0) continue;
+            int p = patIdx - 1;
+
+            for (int key = 0; key < 96; ++key) {
+                QString stepGate = ""; bool hasSteps = false;
+                for (int c = 0; c < NUM_STEPS; ++c) {
+                    if (ch.grid[p][key][c]) {
+                        if (hasSteps) stepGate += " + ";
+                        stepGate += QString("(seqStep == %1)").arg(c);
+                        hasSteps = true;
+                    }
                 }
-            }
 
-            if (hasSteps) {
-                if(!trackUsed) { finalMath += QString("// Synth %1 (%2)\n").arg(m).arg(ch.name); trackUsed = true; }
+                if (hasSteps) {
+                    if(!trackUsed) { finalMath += QString("// Synth %1 (%2)\n").arg(m).arg(ch.name); trackUsed = true; }
+                    double freq = 440.0 * std::pow(2.0, ((107 - key) - 69) / 12.0);
+                    QString chW1 = ch.w1; chW1.replace("t", "lt");
+                    QString chW2 = ch.w2; chW2.replace("t", "lt");
+                    QString chO1 = ch.o1;
+                    chO1.replace("W1", "(" + chW1 + ")");
+                    chO1.replace("W2", "(" + chW2 + ")");
+                    chO1.replace("f", QString::number(freq, 'f', 2));
+                    chO1.replace("t", "lt");
+                    QString adsr = getAdsrString(ch.attack, ch.decay, ch.sustain, ch.release);
 
-                double freq = 440.0 * std::pow(2.0, ((107 - key) - 69) / 12.0);
-
-                QString chW1 = ch.w1; chW1.replace("t", "lt");
-                QString chW2 = ch.w2; chW2.replace("t", "lt");
-                QString chO1 = ch.o1;
-                chO1.replace("W1", "(" + chW1 + ")");
-                chO1.replace("W2", "(" + chW2 + ")");
-                chO1.replace("f", QString::number(freq, 'f', 2));
-                chO1.replace("t", "lt");
-
-                QString adsr = getAdsrString(ch.attack, ch.decay, ch.sustain, ch.release);
-
-                finalMath += QString("var gate_m%1_k%2 = (%3);\n").arg(m).arg(key).arg(stepGate);
-                finalMath += QString("var out_m%1_k%2 = (%4) * %5 * %6 * gate_m%1_k%2;\n").arg(m).arg(key).arg(chO1).arg(adsr).arg(ch.vol);
-                mix += QString(" + out_m%1_k%2").arg(m).arg(key);
+                    finalMath += QString("var gate_m%1_b%2_k%3 = (%4) * (currentBar == %5);\n").arg(m).arg(b).arg(key).arg(stepGate).arg(b);
+                    finalMath += QString("var out_m%1_b%2_k%3 = (%4) * %5 * %6 * gate_m%1_b%2_k%3;\n").arg(m).arg(b).arg(key).arg(chO1).arg(adsr).arg(ch.vol);
+                    mix += QString(" + out_m%1_b%2_k%3").arg(m).arg(b).arg(key);
+                }
             }
         }
         if(trackUsed) finalMath += "\n";
     }
-
     finalMath += QString("clamp(-1.0, %1, 1.0)\n").arg(mix);
     return finalMath;
 }
 
 void MainWindow::onPlayClicked() {
     if (m_btnPlay->text().contains("Play")) {
-        m_txtPreview->setText(generateMathExpression());
-
-        struct LiveDrum { bool steps[16]={false}; double a,d,s,vol; int wType; double baseF; bool isK; };
-        struct LiveMel { bool grid[96][16]={{false}}; double a,d,s,vol; int w1Type; };
-
-        std::vector<LiveDrum> drums(NUM_CHANNELS);
-        std::vector<LiveMel> synths(NUM_MELODIC);
-
-        for (int r=0; r<NUM_CHANNELS; ++r) {
-            drums[r].a = m_channels[r].attack; drums[r].d = m_channels[r].decay; drums[r].s = m_channels[r].sustain; drums[r].vol = m_channels[r].vol;
-            for (int c=0; c<16; ++c) drums[r].steps[c] = m_grid[r][c]->isChecked();
-            QString w1 = m_channels[r].w1.toLower();
-            drums[r].wType = w1.contains("sin") ? 0 : w1.contains("rand") ? 1 : w1.contains("saw") ? 2 : 3;
-            drums[r].baseF = (r==0)?55.0 : (r==1)?200.0 : (r==2||r==3)?8000.0 : (r==4)?440.0 : 110.0;
-            drums[r].isK = (r==0);
-        }
-        for (int m=0; m<NUM_MELODIC; ++m) {
-            synths[m].a = m_melodic[m].attack; synths[m].d = m_melodic[m].decay; synths[m].s = m_melodic[m].sustain; synths[m].vol = m_melodic[m].vol;
-            for(int r=0; r<96; ++r) for (int c=0; c<16; ++c) synths[m].grid[r][c] = m_melodic[m].grid[r][c];
-            QString w1 = m_melodic[m].w1.toLower();
-            synths[m].w1Type = w1.contains("sin") ? 0 : w1.contains("saw") ? 2 : 3;
-        }
-
-        double stepRate = (m_spinBpm->value() / 60.0) * 4.0;
-
+        if (m_btnTestString->text().contains("Stop")) onTestStringClicked(); // Shut down tester if running
 
         std::vector<double> noteFreqs(96);
-        for(int key=0; key<96; ++key) {
-            noteFreqs[key] = 440.0 * std::pow(2.0, ((107 - key) - 69) / 12.0);
-        }
+        for(int key=0; key<96; ++key) noteFreqs[key] = 440.0 * std::pow(2.0, ((107 - key) - 69) / 12.0);
 
-
-        m_synthEngine->setAudioSource([drums, synths, stepRate, noteFreqs](double t) mutable -> double {
-            int seqStep = (long)std::floor(t * stepRate) % 16;
+        m_synthEngine->setAudioSource([this, noteFreqs](double t) mutable -> double {
+            QMutexLocker locker(&m_playState.mutex);
+            double stepRate = (m_playState.bpm / 60.0) * 4.0;
+            long globalStep = (long)std::floor(t * stepRate);
+            int seqStep = globalStep % 16;
+            int currentBar = (globalStep / 16) % 8;
             double lt = std::fmod(t, 1.0 / stepRate);
             double mix = 0.0;
 
-
             static uint32_t rngSeed = 123456789;
 
-            for(int r=0; r<6; ++r) {
-                if (drums[r].steps[seqStep]) {
-                    const auto& trk = drums[r];
-                    double env = trk.s;
-                    if (lt < trk.a && trk.a > 0.001) env = lt / trk.a;
-                    else if (lt < trk.a + trk.d && trk.d > 0.001) env = 1.0 - ((lt - trk.a) / trk.d) * (1.0 - trk.s);
-                    else if (trk.a == 0 && trk.d == 0) env = 1.0;
-
-                    double osc = 0.0, phase = t * trk.baseF;
-                    if (trk.isK) phase *= std::exp(-lt * 15.0);
-
-                    if (trk.wType == 0) osc = std::sin(2.0 * M_PI * phase);
-                    else if (trk.wType == 1) {
-
-                        rngSeed = rngSeed * 1664525 + 1013904223;
-                        osc = (static_cast<float>(rngSeed) / 4294967296.0f) * 2.0f - 1.0f;
-                    }
-                    else if (trk.wType == 2) osc = 2.0 * std::fmod(phase, 1.0) - 1.0;
-                    else osc = (std::fmod(phase, 1.0) < 0.5) ? 1.0 : -1.0;
-
-                    mix += osc * env * trk.vol;
-                }
-            }
-
-            for(int m=0; m<3; ++m) {
-                for(int key=0; key<96; ++key) {
-                    if (synths[m].grid[key][seqStep]) {
-                        const auto& trk = synths[m];
+            if (m_playState.arranger[0][currentBar] == 1) {
+                for(int r=0; r<6; ++r) {
+                    if (m_playState.drumSteps[r][seqStep]) {
+                        const auto& trk = m_playState.drums[r];
                         double env = trk.s;
                         if (lt < trk.a && trk.a > 0.001) env = lt / trk.a;
                         else if (lt < trk.a + trk.d && trk.d > 0.001) env = 1.0 - ((lt - trk.a) / trk.d) * (1.0 - trk.s);
                         else if (trk.a == 0 && trk.d == 0) env = 1.0;
 
-
-                        double freq = noteFreqs[key];
-                        double osc = 0.0, phase = t * freq;
-
-                        if (trk.w1Type == 0) osc = std::sin(2.0 * M_PI * phase);
-                        else if (trk.w1Type == 2) osc = 2.0 * std::fmod(phase, 1.0) - 1.0;
-                        else osc = (std::fmod(phase, 1.0) < 0.5) ? 1.0 : -1.0;
-
+                        double osc = 0.0;
+                        if (trk.isK) {
+                            double osc1 = std::sin(2.0 * M_PI * t * 40.0) * std::exp(-lt * 60.0);
+                            double osc2 = std::sin(2.0 * M_PI * t * 40.0) * std::exp(-lt * 3.0) * 0.3;
+                            osc = std::max(-1.0, std::min(1.0, osc1 + osc2));
+                        }
+                        else if (r == 1) {
+                            double oscTone = std::sin(2.0 * M_PI * t * trk.baseF * (180.0/440.0)) * std::exp(-lt * 6.0);
+                            rngSeed = rngSeed * 1664525 + 1013904223;
+                            double noise = ((static_cast<float>(rngSeed) / 4294967296.0f) * 2.0f - 1.0f) * std::exp(-lt * 12.0);
+                            osc = oscTone + noise;
+                        }
+                        else {
+                            double phase = t * trk.baseF;
+                            if (trk.wType == 0) osc = std::sin(2.0 * M_PI * phase);
+                            else if (trk.wType == 1) { rngSeed = rngSeed * 1664525 + 1013904223; osc = (static_cast<float>(rngSeed) / 4294967296.0f) * 2.0f - 1.0f; }
+                            else if (trk.wType == 2) osc = 2.0 * std::fmod(phase, 1.0) - 1.0;
+                            else osc = (std::fmod(phase, 1.0) < 0.5) ? 1.0 : -1.0;
+                        }
                         mix += osc * env * trk.vol;
+                    }
+                }
+            }
+
+            for(int m=0; m<3; ++m) {
+                int patIdx = m_playState.arranger[m+1][currentBar];
+                if (patIdx > 0) {
+                    int p = patIdx - 1;
+                    for(int key=0; key<96; ++key) {
+                        if (m_playState.synthGrid[m][p][key][seqStep]) {
+                            const auto& trk = m_playState.synths[m];
+                            double env = trk.s;
+                            if (lt < trk.a && trk.a > 0.001) env = lt / trk.a;
+                            else if (lt < trk.a + trk.d && trk.d > 0.001) env = 1.0 - ((lt - trk.a) / trk.d) * (1.0 - trk.s);
+                            else if (trk.a == 0 && trk.d == 0) env = 1.0;
+
+                            double freq = noteFreqs[key];
+                            double osc = 0.0, phase = t * freq;
+
+                            if (trk.w1Type == 0) osc = std::sin(2.0 * M_PI * phase);
+                            else if (trk.w1Type == 2) osc = 2.0 * std::fmod(phase, 1.0) - 1.0;
+                            else osc = (std::fmod(phase, 1.0) < 0.5) ? 1.0 : -1.0;
+
+                            mix += osc * env * trk.vol;
+                        }
                     }
                 }
             }
@@ -498,13 +680,154 @@ void MainWindow::onPlayClicked() {
         });
 
         m_synthEngine->start();
-        m_btnPlay->setText("⏹ Stop");
-        m_btnPlay->setStyleSheet("background-color: #880000; color: white;");
+        m_btnPlay->setText("⏹ Stop Sequence");
+        m_btnPlay->setStyleSheet("background-color: #880000; color: white; padding: 5px 15px;");
     } else {
         m_synthEngine->stop();
-        m_btnPlay->setText("▶ Play");
-        m_btnPlay->setStyleSheet("background-color: #005577; color: white;");
+        m_btnPlay->setText("▶ Play Sequence");
+        m_btnPlay->setStyleSheet("background-color: #005577; color: white; padding: 5px 15px;");
     }
+}
+
+
+void MainWindow::onTestStringClicked() {
+    if (m_btnTestString->text().contains("Stop")) {
+        m_synthEngine->stop();
+        m_btnTestString->setText("🧪 Test A-4");
+        m_btnPlay->setEnabled(true);
+        return;
+    }
+
+    QString code = m_txtTestString->text();
+    try {
+        auto ast = XpressiveParser::parse(code.toStdString());
+        std::shared_ptr<XpressiveParser::Node> sharedAst(ast.release());
+
+        double testBpm = m_spinBpm->value();
+
+        m_synthEngine->setAudioSource([sharedAst, testBpm](double t) mutable -> double {
+            XpressiveParser::Env env;
+            env.t = t;
+            env.tempo = testBpm;
+            env.srate = 44100.0;
+            env.f = 440.0;
+
+            double val = sharedAst->eval(env);
+            return std::max(-1.0, std::min(val, 1.0));
+        });
+
+        m_synthEngine->start();
+        m_btnTestString->setText("⏹ Stop Test");
+        if (m_btnPlay->text().contains("Stop")) onPlayClicked();
+        m_btnPlay->setEnabled(false);
+
+    } catch (std::exception& e) {
+        QMessageBox::warning(this, "Parse Error", "Check your syntax: " + QString(e.what()));
+    }
+}
+
+void MainWindow::onImportMmpClicked() {
+    QString filePath = QFileDialog::getOpenFileName(this, "Open LMMS Project", "", "LMMS Project (*.mmp)");
+    if (filePath.isEmpty()) return;
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return;
+
+    QDomDocument doc;
+    if (!doc.setContent(&file)) { QMessageBox::warning(this, "Parse Error", "Failed to parse .mmp file format."); return; }
+
+    QDomElement root = doc.documentElement();
+    QDomElement song = root.firstChildElement("song");
+    m_spinBpm->setValue(song.attribute("bpm", "120").toInt());
+
+    for (int r = 0; r < NUM_CHANNELS; ++r) { for (int c = 0; c < NUM_STEPS; ++c) m_grid[r][c]->setChecked(false); }
+    for (int t = 0; t < 4; ++t) {
+        for (int b = 0; b < 8; ++b) {
+            m_arrangerState[t][b] = 0;
+            if(t > 0) { for (int k = 0; k < 96; ++k) { for (int c = 0; c < NUM_STEPS; ++c) m_melodic[t-1].grid[b][k][c] = false; } }
+        }
+    }
+
+    QDomNodeList tracks = song.elementsByTagName("track");
+    for (int i = 0; i < tracks.size(); ++i) {
+        QDomElement track = tracks.at(i).toElement();
+        QString name = track.attribute("name");
+
+        int dIdx = -1; for(int r=0; r<NUM_CHANNELS; ++r) if(m_channels[r].name == name) dIdx = r;
+        int mIdx = -1; for(int m=0; m<NUM_MELODIC; ++m) if(m_melodic[m].name == name) mIdx = m;
+
+        QDomElement xpressive = track.firstChildElement("instrumenttrack").firstChildElement("instrument").firstChildElement("xpressive");
+        if (xpressive.isNull()) xpressive = track.firstChildElement("instrumenttrack").firstChildElement("instrument").firstChildElement("Xpressive");
+
+        if (dIdx != -1) {
+            if (!xpressive.isNull()) {
+                m_channels[dIdx].w1 = xpressive.hasAttribute("W1") ? xpressive.attribute("W1") : xpressive.attribute("w1");
+                m_channels[dIdx].o1 = xpressive.hasAttribute("O1") ? xpressive.attribute("O1") : xpressive.attribute("o1");
+                m_channels[dIdx].attack = xpressive.attribute("env_atk").toDouble();
+                m_channels[dIdx].decay = xpressive.attribute("env_dec").toDouble();
+                m_channels[dIdx].sustain = xpressive.attribute("env_sus").toDouble();
+                m_channels[dIdx].release = xpressive.attribute("env_rel").toDouble();
+            }
+
+            QDomNodeList patterns = track.elementsByTagName("pattern");
+            for (int p = 0; p < patterns.size(); ++p) {
+                QDomElement pat = patterns.at(p).toElement();
+                int bar = pat.attribute("pos").toInt() / (16 * 48);
+                if (bar >= 0 && bar < 8) {
+                    m_arrangerState[0][bar] = 1;
+                    QDomNodeList notes = pat.elementsByTagName("note");
+                    for (int n = 0; n < notes.size(); ++n) {
+                        int step = notes.at(n).toElement().attribute("pos").toInt() / 48;
+                        if (step >= 0 && step < NUM_STEPS) m_grid[dIdx][step]->setChecked(true);
+                    }
+                }
+            }
+        }
+        else if (mIdx != -1) {
+            if (!xpressive.isNull()) {
+                m_melodic[mIdx].w1 = xpressive.hasAttribute("W1") ? xpressive.attribute("W1") : xpressive.attribute("w1");
+                m_melodic[mIdx].w2 = xpressive.hasAttribute("W2") ? xpressive.attribute("W2") : xpressive.attribute("w2");
+                m_melodic[mIdx].o1 = xpressive.hasAttribute("O1") ? xpressive.attribute("O1") : xpressive.attribute("o1");
+                m_melodic[mIdx].attack = xpressive.attribute("env_atk").toDouble();
+                m_melodic[mIdx].decay = xpressive.attribute("env_dec").toDouble();
+                m_melodic[mIdx].sustain = xpressive.attribute("env_sus").toDouble();
+                m_melodic[mIdx].release = xpressive.attribute("env_rel").toDouble();
+            }
+
+            QDomNodeList patterns = track.elementsByTagName("pattern");
+            for (int p = 0; p < patterns.size(); ++p) {
+                QDomElement pat = patterns.at(p).toElement();
+                int bar = pat.attribute("pos").toInt() / (16 * 48);
+                if (bar >= 0 && bar < 8) {
+                    m_arrangerState[mIdx+1][bar] = bar + 1;
+                    QDomNodeList notes = pat.elementsByTagName("note");
+                    for (int n = 0; n < notes.size(); ++n) {
+                        int step = notes.at(n).toElement().attribute("pos").toInt() / 48;
+                        int key = 107 - notes.at(n).toElement().attribute("key").toInt();
+                        if (step >= 0 && step < NUM_STEPS && key >= 0 && key < 96) {
+                            m_melodic[mIdx].grid[bar][key][step] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
+    for(int r=0; r<4; ++r) {
+        for(int b=0; b<8; ++b) {
+            int hold = m_arrangerState[r][b];
+            m_arrangerState[r][b] = 0;
+            if (hold > 0) {
+                m_arrangerState[r][b] = hold - 1;
+                onArrangerClicked(r, b);
+            } else {
+                onArrangerClicked(r, b); onArrangerClicked(r, b);
+            }
+        }
+    }
+    updatePlaybackState();
+    QMessageBox::information(this, "Success", "Groovebox project loaded successfully!");
 }
 
 void MainWindow::onExportMmpClicked() {
@@ -521,7 +844,6 @@ void MainWindow::onExportMmpClicked() {
 
     const int ticksPerStep = 48;
 
-
     for (int r = 0; r < NUM_CHANNELS; ++r) {
         bool hasNotes = false;
         for (int c = 0; c < NUM_STEPS; ++c) { if (m_grid[r][c]->isChecked()) hasNotes = true; }
@@ -530,50 +852,97 @@ void MainWindow::onExportMmpClicked() {
         ChannelConfig& ch = m_channels[r];
         QDomElement track = doc.createElement("track"); track.setAttribute("name", ch.name); track.setAttribute("type", "0"); song.appendChild(track);
         QDomElement instTrack = doc.createElement("instrumenttrack"); track.appendChild(instTrack);
-        QDomElement instrument = doc.createElement("instrument"); instrument.setAttribute("name", "Xpressive");
 
-        QDomElement xpressive = doc.createElement("Xpressive");
-        xpressive.setAttribute("w1", ch.w1); xpressive.setAttribute("o1", ch.o1);
+        QDomElement instrument = doc.createElement("instrument"); instrument.setAttribute("name", "xpressive");
+
+        QDomElement xpressive = doc.createElement("xpressive");
+        xpressive.setAttribute("W1", ch.w1); xpressive.setAttribute("W2", ""); xpressive.setAttribute("W3", "");
+        xpressive.setAttribute("O1", ch.o1); xpressive.setAttribute("O2", "");
+
+        xpressive.setAttribute("W1sample", "AA=="); xpressive.setAttribute("W2sample", "AA=="); xpressive.setAttribute("W3sample", "AA==");
+        xpressive.setAttribute("smoothW1", "0"); xpressive.setAttribute("smoothW2", "0"); xpressive.setAttribute("smoothW3", "0");
+        xpressive.setAttribute("interpolateW1", "0"); xpressive.setAttribute("interpolateW2", "0"); xpressive.setAttribute("interpolateW3", "0");
+        xpressive.setAttribute("A1", "1"); xpressive.setAttribute("A2", "1"); xpressive.setAttribute("A3", "1");
+        xpressive.setAttribute("PAN1", "0"); xpressive.setAttribute("PAN2", "-1"); xpressive.setAttribute("RELTRANS", "50"); xpressive.setAttribute("version", "0.1");
+
         xpressive.setAttribute("env_atk", QString::number(ch.attack)); xpressive.setAttribute("env_dec", QString::number(ch.decay));
         xpressive.setAttribute("env_sus", QString::number(ch.sustain)); xpressive.setAttribute("env_rel", QString::number(ch.release));
 
-        instrument.appendChild(xpressive); instTrack.appendChild(instrument);
-        QDomElement pattern = doc.createElement("pattern"); pattern.setAttribute("type", "1"); pattern.setAttribute("pos", "0"); pattern.setAttribute("steps", "16"); pattern.setAttribute("len", QString::number(16 * ticksPerStep)); track.appendChild(pattern);
+        QDomElement keyNode = doc.createElement("key");
+        xpressive.appendChild(keyNode);
 
-        for (int c = 0; c < NUM_STEPS; ++c) {
-            if (m_grid[r][c]->isChecked()) {
-                QDomElement note = doc.createElement("note"); note.setAttribute("pos", QString::number(c * ticksPerStep)); note.setAttribute("len", QString::number(ticksPerStep)); note.setAttribute("key", "60"); note.setAttribute("vol", QString::number(int(ch.vol * 100))); pattern.appendChild(note);
+        instrument.appendChild(xpressive); instTrack.appendChild(instrument);
+
+        for (int b = 0; b < 8; ++b) {
+            if (m_arrangerState[0][b] == 0) continue;
+
+            QDomElement pattern = doc.createElement("pattern");
+            pattern.setAttribute("type", "1");
+            pattern.setAttribute("pos", QString::number(b * 16 * ticksPerStep));
+            pattern.setAttribute("steps", "16");
+            pattern.setAttribute("len", QString::number(16 * ticksPerStep));
+            track.appendChild(pattern);
+
+            for (int c = 0; c < NUM_STEPS; ++c) {
+                if (m_grid[r][c]->isChecked()) {
+                    QDomElement note = doc.createElement("note");
+                    note.setAttribute("pos", QString::number(c * ticksPerStep)); note.setAttribute("len", QString::number(ticksPerStep));
+                    note.setAttribute("key", "60"); note.setAttribute("vol", QString::number(int(ch.vol * 100)));
+                    pattern.appendChild(note);
+                }
             }
         }
     }
 
-
     for (int m = 0; m < NUM_MELODIC; ++m) {
-        bool hasNotes = false;
-        for (int key = 0; key < 96; ++key) { for (int c = 0; c < 16; ++c) { if (m_melodic[m].grid[key][c]) hasNotes = true; } }
-        if (!hasNotes) continue;
-
         MelodicConfig& ch = m_melodic[m];
         QDomElement track = doc.createElement("track"); track.setAttribute("name", ch.name); track.setAttribute("type", "0"); song.appendChild(track);
         QDomElement instTrack = doc.createElement("instrumenttrack"); track.appendChild(instTrack);
-        QDomElement instrument = doc.createElement("instrument"); instrument.setAttribute("name", "Xpressive");
 
-        QDomElement xpressive = doc.createElement("Xpressive");
-        xpressive.setAttribute("w1", ch.w1); xpressive.setAttribute("w2", ch.w2); xpressive.setAttribute("o1", ch.o1);
+        QDomElement instrument = doc.createElement("instrument"); instrument.setAttribute("name", "xpressive");
+
+        QDomElement xpressive = doc.createElement("xpressive");
+        xpressive.setAttribute("W1", ch.w1); xpressive.setAttribute("W2", ch.w2); xpressive.setAttribute("W3", "");
+        xpressive.setAttribute("O1", ch.o1); xpressive.setAttribute("O2", "");
+
+        xpressive.setAttribute("W1sample", "AA=="); xpressive.setAttribute("W2sample", "AA=="); xpressive.setAttribute("W3sample", "AA==");
+        xpressive.setAttribute("smoothW1", "0"); xpressive.setAttribute("smoothW2", "0"); xpressive.setAttribute("smoothW3", "0");
+        xpressive.setAttribute("interpolateW1", "0"); xpressive.setAttribute("interpolateW2", "0"); xpressive.setAttribute("interpolateW3", "0");
+        xpressive.setAttribute("A1", "1"); xpressive.setAttribute("A2", "1"); xpressive.setAttribute("A3", "1");
+        xpressive.setAttribute("PAN1", "0"); xpressive.setAttribute("PAN2", "-1"); xpressive.setAttribute("RELTRANS", "50"); xpressive.setAttribute("version", "0.1");
+
         xpressive.setAttribute("env_atk", QString::number(ch.attack)); xpressive.setAttribute("env_dec", QString::number(ch.decay));
         xpressive.setAttribute("env_sus", QString::number(ch.sustain)); xpressive.setAttribute("env_rel", QString::number(ch.release));
 
-        instrument.appendChild(xpressive); instTrack.appendChild(instrument);
-        QDomElement pattern = doc.createElement("pattern"); pattern.setAttribute("type", "1"); pattern.setAttribute("pos", "0"); pattern.setAttribute("steps", "16"); pattern.setAttribute("len", QString::number(16 * ticksPerStep)); track.appendChild(pattern);
+        QDomElement keyNode = doc.createElement("key");
+        xpressive.appendChild(keyNode);
 
-        for (int key = 0; key < 96; ++key) {
-            for (int c = 0; c < 16; ++c) {
-                if (ch.grid[key][c]) {
-                    QDomElement note = doc.createElement("note");
-                    note.setAttribute("pos", QString::number(c * ticksPerStep)); note.setAttribute("len", QString::number(ticksPerStep));
-                    note.setAttribute("key", QString::number(107 - key)); // Match exact LMMS Midi mapping
-                    note.setAttribute("vol", QString::number(int(ch.vol * 100)));
-                    pattern.appendChild(note);
+        instrument.appendChild(xpressive); instTrack.appendChild(instrument);
+
+        for (int b = 0; b < 8; ++b) {
+            int patIdx = m_arrangerState[m+1][b];
+            if (patIdx == 0) continue;
+            int p = patIdx - 1;
+
+            bool hasNotes = false;
+            for (int key = 0; key < 96; ++key) { for (int c = 0; c < 16; ++c) { if (ch.grid[p][key][c]) hasNotes = true; } }
+            if (!hasNotes) continue;
+
+            QDomElement pattern = doc.createElement("pattern");
+            pattern.setAttribute("type", "1");
+            pattern.setAttribute("pos", QString::number(b * 16 * ticksPerStep));
+            pattern.setAttribute("steps", "16");
+            pattern.setAttribute("len", QString::number(16 * ticksPerStep));
+            track.appendChild(pattern);
+
+            for (int key = 0; key < 96; ++key) {
+                for (int c = 0; c < 16; ++c) {
+                    if (ch.grid[p][key][c]) {
+                        QDomElement note = doc.createElement("note");
+                        note.setAttribute("pos", QString::number(c * ticksPerStep)); note.setAttribute("len", QString::number(ticksPerStep));
+                        note.setAttribute("key", QString::number(107 - key)); note.setAttribute("vol", QString::number(int(ch.vol * 100)));
+                        pattern.appendChild(note);
+                    }
                 }
             }
         }
