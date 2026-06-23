@@ -10,6 +10,12 @@
 #include <functional>
 #include <QString>
 
+#include "effect.h"
+#include "instrument.h"
+
+
+using AudioCallback = std::function<void(double t, double outDrums[6], double outSynths[3], double& masterVol, double& masterDrive)>;
+
 class SynthEngine : public QIODevice {
     Q_OBJECT
 
@@ -19,13 +25,18 @@ public:
 
     void start();
     void stop();
-    void setAudioSource(std::function<double(double)> func);
+    void setAudioSource(AudioCallback func);
+
+    void setInstrumentType(InstrumentType type) { m_currentInstType = type; }
+    void setTripleOscConfig(const TripleOscConfig& config) { m_tripleOscConfig = config; }
+    void setLb302Config(const Lb302Config& config) { m_lb302Config = config; }
+
+
+    void addEffect(int targetIndex, int effectType);
+    void clearEffects();
 
     bool isSequential() const override;
     qint64 bytesAvailable() const override;
-
-public slots:
-    void setExpression(QString code);
 
 protected:
     qint64 readData(char *data, qint64 maxlen) override;
@@ -34,13 +45,23 @@ protected:
 private:
     QAudioSink *m_audioSink = nullptr;
     QAudioFormat m_format;
-    std::function<double(double)> m_oscillator = [](double){ return 0.0; };
+    AudioCallback m_audioSource;
 
     QMutex m_mutex;
     double m_sampleRate = 44100.0;
     qint64 m_totalSamples = 0;
-    QString m_currentCode;
     bool m_isPlaying = false;
+
+
+    EffectChain m_masterEffects;
+    EffectChain m_drumEffects[6];
+    EffectChain m_synthEffects[3];
+
+    InstrumentType m_currentInstType = InstrumentType::Xpressive;
+    TripleOscConfig m_tripleOscConfig;
+    Lb302Config m_lb302Config;
+    TripleOscProcessor m_tripleOscProcessor;
+    Lb302Processor m_lb302Processor;
 };
 
 #endif // SYNTHENGINE_H

@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "synthengine.h"
 #include "xpressive_parser.h"
+#include "projectio.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -8,17 +9,15 @@
 #include <QGroupBox>
 #include <QFileDialog>
 #include <QMessageBox>
-#include <QtXml/QDomDocument>
-#include <QFile>
-#include <QTextStream>
 #include <QScrollBar>
 #include <QTimer>
 #include <QFrame>
 #include <QMutexLocker>
+#include <memory>
+#include <array>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     m_synthEngine = new SynthEngine(this);
-
     setWindowTitle("Xpressive Groovebox (Mobile)");
     resize(850, 500);
 
@@ -34,14 +33,33 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     m_channels[2].name = "CHat";  m_channels[2].w1 = "randv(t*srate)"; m_channels[2].o1 = "W1(integrate(f))"; m_channels[2].decay = 0.05; m_channels[2].sustain = 0; m_channels[2].vol = 0.5;
     m_channels[3].name = "OHat";  m_channels[3].w1 = "randv(t*srate)"; m_channels[3].o1 = "W1(integrate(f))"; m_channels[3].decay = 0.3; m_channels[3].sustain = 0; m_channels[3].vol = 0.6;
-    m_channels[4].name = "Prc1"; m_channels[4].w1 = "squarew(t)"; m_channels[4].o1 = "W1(integrate(f)) * exp(-t*20)"; m_channels[4].decay = 0.1; m_channels[4].vol = 0.4;
+    m_channels[4].name = "Prc1";  m_channels[4].w1 = "squarew(t)"; m_channels[4].o1 = "W1(integrate(f)) * exp(-t*20)"; m_channels[4].decay = 0.1; m_channels[4].vol = 0.4;
     m_channels[5].name = "Prc2";  m_channels[5].w1 = "saww(t)"; m_channels[5].o1 = "W1(integrate(f*0.5))"; m_channels[5].decay = 0.4; m_channels[5].sustain = 0.5; m_channels[5].vol = 0.6;
 
-    m_melodic[0].name = "Bass"; m_melodic[0].w1 = "saww(t)"; m_melodic[0].w2 = "squarew(t)"; m_melodic[0].o1 = "(W1(integrate(f)) + W2(integrate(f*1.005)))*0.5"; m_melodic[0].decay = 0.4; m_melodic[0].sustain = 0.1;
-    m_melodic[1].name = "Synth"; m_melodic[1].w1 = "sinew(t)"; m_melodic[1].w2 = "saww(t)"; m_melodic[1].o1 = "(W1(integrate(f)) + W2(integrate(f*2.0)))*0.5"; m_melodic[1].decay = 0.8; m_melodic[1].sustain = 0.6;
-    m_melodic[2].name = "Pad"; m_melodic[2].w1 = "saww(t)"; m_melodic[2].w2 = "saww(t)"; m_melodic[2].o1 = "(W1(integrate(f*0.99)) + W2(integrate(f*1.01)))*0.5"; m_melodic[2].attack = 0.5; m_melodic[2].decay = 1.0; m_melodic[2].sustain = 0.8; m_melodic[2].release = 1.0;
+    m_melodic[0].name = "Bass";
+    m_melodic[0].w1 = "saww(t)";
+    m_melodic[0].w2 = "squarew(t)";
+    m_melodic[0].o1 = "(W1(integrate(f)) + W2(integrate(f*1.005)))*0.5";
+    m_melodic[0].decay = 0.4; m_melodic[0].sustain = 0.1;
+
+    m_melodic[1].name = "Synth";
+    m_melodic[1].w1 = "sinew(t)";
+    m_melodic[1].w2 = "saww(t)";
+    m_melodic[1].o1 = "(W1(integrate(f)) + W2(integrate(f*2.0)))*0.5";
+    m_melodic[1].decay = 0.8; m_melodic[1].sustain = 0.6;
+
+    m_melodic[2].name = "Pad";
+    m_melodic[2].w1 = "saww(t)";
+    m_melodic[2].w2 = "saww(t)";
+    m_melodic[2].o1 = "(W1(integrate(f*0.99)) + W2(integrate(f*1.01)))*0.5";
+    m_melodic[2].attack = 0.5; m_melodic[2].decay = 1.0; m_melodic[2].sustain = 0.8; m_melodic[2].release = 1.0;
 
     setupUI();
+    recompileASTs();
+
+    QTimer* timer = new QTimer(this);
+    connect(timer, &QTimer::timeout, this, &MainWindow::updatePlaybackState);
+    timer->start(50);
 }
 
 MainWindow::~MainWindow() {
@@ -49,10 +67,18 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::setupUI() {
-    QScrollArea* mainScroll = new QScrollArea(this);
+    QWidget* baseWidget = new QWidget(this);
+    setCentralWidget(baseWidget);
+    QVBoxLayout* baseLayout = new QVBoxLayout(baseWidget);
+    baseLayout->setContentsMargins(0, 0, 0, 0);
+
+    m_mainTabs = new QTabWidget(this);
+    m_mainTabs->setStyleSheet("QTabWidget::pane { border: 1px solid #444; } QTabBar::tab { background: #333; color: white; padding: 8px 20px; } QTabBar::tab:selected { background: #007acc; font-weight: bold; }");
+    baseLayout->addWidget(m_mainTabs);
+
+    QScrollArea* mainScroll = new QScrollArea();
     mainScroll->setWidgetResizable(true);
-    mainScroll->setStyleSheet("QScrollArea { border: none; background-color: transparent; }");
-    setCentralWidget(mainScroll);
+    mainScroll->setStyleSheet("border: none; background-color: transparent;");
 
     QWidget* centralWidget = new QWidget();
     mainScroll->setWidget(centralWidget);
@@ -60,278 +86,175 @@ void MainWindow::setupUI() {
     mainLayout->setContentsMargins(4, 4, 4, 4);
     mainLayout->setSpacing(4);
 
-    centralWidget->setStyleSheet(R"(
-        QWidget { background-color: #1e1e1e; color: #e0e0e0; font-family: "Segoe UI", sans-serif; font-size: 11px; }
-        QGroupBox { border: 1px solid #444; border-radius: 4px; font-weight: bold; margin-top: 1ex; padding: 2px; }
-        QGroupBox::title { subcontrol-origin: margin; left: 5px; padding: 0 3px; color: #00ffff; }
-        QCheckBox::indicator { width: 14px; height: 35px; border: 1px solid #555; background: #2b2b2b; border-radius: 2px; }
-        QCheckBox::indicator:checked { background: #00ffff; border: 1px solid #ffffff; }
-        QPushButton { background-color: #333; border: 1px solid #555; padding: 6px 2px; color: #fff; border-radius: 3px; font-weight: bold; }
-        QPushButton:hover, QPushButton:pressed { background-color: #444; border: 1px solid #00ffff; }
-        QSpinBox, QComboBox, QLineEdit { background-color: #333; color: white; border: 1px solid #555; padding: 2px; min-height: 25px; }
-    )");
+    centralWidget->setStyleSheet(R"(QWidget { background-color: #1e1e1e; color: #e0e0e0; font-family: "Segoe UI", sans-serif; font-size: 11px; } QGroupBox { border: 1px solid #444; border-radius: 4px; font-weight: bold; margin-top: 1ex; padding: 2px; } QGroupBox::title { subcontrol-origin: margin; left: 5px; padding: 0 3px; color: #00ffff; } QCheckBox::indicator { width: 14px; height: 35px; border: 1px solid #555; background: #2b2b2b; border-radius: 2px; } QCheckBox::indicator:checked { background: #00ffff; border: 1px solid #ffffff; } QPushButton { background-color: #333; border: 1px solid #555; padding: 6px 2px; color: #fff; border-radius: 3px; font-weight: bold; } QPushButton:hover, QPushButton:pressed { background-color: #444; border: 1px solid #00ffff; } QSpinBox, QComboBox, QLineEdit { background-color: #333; color: white; border: 1px solid #555; padding: 2px; min-height: 25px; })");
 
     QHBoxLayout* topLayout = new QHBoxLayout();
-    m_spinBpm = new QSpinBox();
-    m_spinBpm->setRange(60, 300);
-    m_spinBpm->setValue(120);
+    m_spinBpm = new QSpinBox(); m_spinBpm->setRange(60, 300); m_spinBpm->setValue(120);
     connect(m_spinBpm, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::updatePlaybackState);
 
-    topLayout->addWidget(new QLabel("BPM:"));
-    topLayout->addWidget(m_spinBpm);
+    m_btnPlay = new QPushButton("▶ Play Sequence"); m_btnPlay->setStyleSheet("background-color: #005577; color: white; padding: 5px 15px;");
+    m_txtTestString = new QLineEdit(); m_txtTestString->setPlaceholderText("Paste Custom Formula Here...");
+    m_btnTestString = new QPushButton("🧪 Test Expr"); m_btnTestString->setStyleSheet("background-color: #5500aa; color: white; padding: 5px 15px;");
+    m_btnImport = new QPushButton("📂 Import"); m_btnImport->setStyleSheet("background-color: #775500; color: white;");
+    m_btnExport = new QPushButton("💾 Export"); m_btnExport->setStyleSheet("background-color: #005533; color: white;");
 
-    m_btnPlay = new QPushButton("▶ Play Sequence");
-    m_btnPlay->setStyleSheet("background-color: #005577; color: white; padding: 5px 15px;");
-
-    m_txtTestString = new QLineEdit();
-    m_txtTestString->setPlaceholderText("Paste Custom Formula Here...");
-
-    m_btnTestString = new QPushButton("🧪 Test Expr");
-    m_btnTestString->setStyleSheet("background-color: #5500aa; color: white; padding: 5px 15px;");
-
-    m_btnImport = new QPushButton("📂 Import");
-    m_btnImport->setStyleSheet("background-color: #775500; color: white;");
-
-    m_btnExport = new QPushButton("💾 Export");
-    m_btnExport->setStyleSheet("background-color: #005533; color: white;");
-
-    topLayout->addWidget(m_btnPlay);
-    topLayout->addWidget(m_txtTestString);
-    topLayout->addWidget(m_btnTestString);
-    topLayout->addWidget(m_btnImport);
-    topLayout->addWidget(m_btnExport);
+    topLayout->addWidget(new QLabel("BPM:")); topLayout->addWidget(m_spinBpm); topLayout->addWidget(m_btnPlay); topLayout->addWidget(m_txtTestString); topLayout->addWidget(m_btnTestString); topLayout->addWidget(m_btnImport); topLayout->addWidget(m_btnExport);
     mainLayout->addLayout(topLayout);
 
     QHBoxLayout* middleLayout = new QHBoxLayout();
-
     QGroupBox* drumBox = new QGroupBox("Percussion (Global)");
     QVBoxLayout* drumBoxLayout = new QVBoxLayout(drumBox);
-    drumBoxLayout->setContentsMargins(2, 2, 2, 2);
-
-    QScrollArea* drumScrollArea = new QScrollArea();
-    drumScrollArea->setWidgetResizable(true);
-    drumScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    drumScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-
-    QWidget* gridContainer = new QWidget();
-    QGridLayout* gridLayout = new QGridLayout(gridContainer);
-    gridLayout->setSpacing(1);
-    gridLayout->setContentsMargins(0, 0, 0, 0);
-    gridLayout->setAlignment(Qt::AlignLeft);
+    QScrollArea* drumScrollArea = new QScrollArea(); drumScrollArea->setWidgetResizable(true); drumScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    QWidget* gridContainer = new QWidget(); QGridLayout* gridLayout = new QGridLayout(gridContainer);
 
     for (int r = 0; r < NUM_CHANNELS; ++r) {
-        QPushButton* btnCfg = new QPushButton("⚙️" + m_channels[r].name);
-        btnCfg->setFixedWidth(50);
+        QPushButton* btnCfg = new QPushButton("⚙️" + m_channels[r].name); btnCfg->setFixedWidth(50);
         connect(btnCfg, &QPushButton::clicked, this, [this, r]() { onConfigClicked(r); });
         gridLayout->addWidget(btnCfg, r, 0);
-
         for (int c = 0; c < NUM_STEPS; ++c) {
-            m_grid[r][c] = new QCheckBox();
-            connect(m_grid[r][c], &QCheckBox::clicked, this, &MainWindow::updatePlaybackState);
+            m_grid[r][c] = new QCheckBox(); connect(m_grid[r][c], &QCheckBox::clicked, this, &MainWindow::updatePlaybackState);
             gridLayout->addWidget(m_grid[r][c], r, c + 1);
-
-            if ((c + 1) % 4 == 0 && c != 15) {
-                QFrame* line = new QFrame();
-                line->setFrameShape(QFrame::VLine);
-                line->setStyleSheet("border-left: 1px solid #444; margin-left: 0px; margin-right: 0px;");
-                gridLayout->addWidget(line, r, c + 2);
-            }
         }
     }
-    drumScrollArea->setWidget(gridContainer);
-    drumBoxLayout->addWidget(drumScrollArea);
-    middleLayout->addWidget(drumBox);
+    drumScrollArea->setWidget(gridContainer); drumBoxLayout->addWidget(drumScrollArea); middleLayout->addWidget(drumBox);
 
-    QGroupBox* arrangerBox = new QGroupBox("Song Arranger (Click to Cycle Patterns)");
-    arrangerBox->setStyleSheet("QGroupBox::title { color: #ffff00; }");
+    QGroupBox* arrangerBox = new QGroupBox("Song Arranger");
     QGridLayout* arrangerLayout = new QGridLayout(arrangerBox);
-    arrangerLayout->setSpacing(4);
-    arrangerLayout->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-
     QStringList trackNames = {"Drums", "Bass", "Synth", "Pad"};
     for (int row = 0; row < 4; ++row) {
-        QLabel* trackLabel = new QLabel(trackNames[row]);
-        trackLabel->setFixedWidth(40);
-        arrangerLayout->addWidget(trackLabel, row, 0);
-
+        QLabel* trackLabel = new QLabel(trackNames[row]); trackLabel->setFixedWidth(40); arrangerLayout->addWidget(trackLabel, row, 0);
         for (int bar = 0; bar < 8; ++bar) {
-            m_arrangerGrid[row][bar] = new QPushButton("");
-            m_arrangerGrid[row][bar]->setFixedSize(25, 25);
-            m_arrangerGrid[row][bar]->setStyleSheet("QPushButton { background-color: #333; border: 1px solid #555; border-radius: 3px; }");
-
-            connect(m_arrangerGrid[row][bar], &QPushButton::clicked, this, [this, row, bar]() {
-                onArrangerClicked(row, bar);
-            });
+            m_arrangerGrid[row][bar] = new QPushButton(""); m_arrangerGrid[row][bar]->setFixedSize(25, 25);
+            connect(m_arrangerGrid[row][bar], &QPushButton::clicked, this, [this, row, bar]() { onArrangerClicked(row, bar); });
             arrangerLayout->addWidget(m_arrangerGrid[row][bar], row, bar + 1);
         }
     }
     onArrangerClicked(0, 0); onArrangerClicked(1, 0); onArrangerClicked(2, 0); onArrangerClicked(3, 0);
-
-    middleLayout->addWidget(arrangerBox);
-    mainLayout->addLayout(middleLayout);
-
+    middleLayout->addWidget(arrangerBox); mainLayout->addLayout(middleLayout);
 
     QGroupBox* autoBox = new QGroupBox("Step Automations (Macros)");
-    autoBox->setStyleSheet("QGroupBox::title { color: #00ff88; }");
     QVBoxLayout* autoLayout = new QVBoxLayout(autoBox);
-    
-    m_autoTracks[0].name = "Master Drive";
-    m_autoTracks[0].target = AutoTarget::MasterDrive;
-
-    m_autoTracks[1].name = "Master Volume";
-    m_autoTracks[1].target = AutoTarget::MasterVolume;
-
-    for (int i = 0; i < 2; ++i) { 
-        QHBoxLayout* row = new QHBoxLayout();
-        QLabel* lbl = new QLabel("<b>" + m_autoTracks[i].name + "</b>");
-        lbl->setFixedWidth(80);
-        
-        m_autoGrids[i] = new AutomationGrid(m_autoTracks[i], this);
-        connect(m_autoGrids[i], &AutomationGrid::automationChanged, this, &MainWindow::updatePlaybackState);
-        
-        row->addWidget(lbl);
-        row->addWidget(m_autoGrids[i]);
-        autoLayout->addLayout(row);
+    m_autoTracks[0].name = "Master Drive"; m_autoTracks[0].target = AutoTarget::MasterDrive;
+    m_autoTracks[1].name = "Master Volume"; m_autoTracks[1].target = AutoTarget::MasterVolume;
+    for (int i = 0; i < 2; ++i) {
+        QHBoxLayout* row = new QHBoxLayout(); QLabel* lbl = new QLabel("<b>" + m_autoTracks[i].name + "</b>"); lbl->setFixedWidth(80);
+        m_autoGrids[i] = new AutomationGrid(m_autoTracks[i], this); connect(m_autoGrids[i], &AutomationGrid::automationChanged, this, &MainWindow::updatePlaybackState);
+        row->addWidget(lbl); row->addWidget(m_autoGrids[i]); autoLayout->addLayout(row);
     }
     mainLayout->addWidget(autoBox);
 
-
     QGroupBox* melodicBox = new QGroupBox("Melodic Synths");
-    melodicBox->setStyleSheet("QGroupBox::title { color: #cc55ff; }");
     QVBoxLayout* melodicLayout = new QVBoxLayout(melodicBox);
-    melodicLayout->setContentsMargins(2, 2, 2, 2);
-    melodicLayout->setSpacing(2);
-
     for (int m = 0; m < NUM_MELODIC; ++m) {
-        QHBoxLayout* row = new QHBoxLayout();
-        row->setSpacing(2);
-
-        QLabel* lblName = new QLabel("<b>" + m_melodic[m].name + "</b>");
-        lblName->setFixedWidth(45);
-
-        QPushButton* btnCfg = new QPushButton("⚙️");
-        btnCfg->setFixedWidth(30);
-        connect(btnCfg, &QPushButton::clicked, this, [this, m]() { onMelodicConfigClicked(m); });
-
-        m_comboEditBar[m] = new QComboBox();
-        m_comboEditBar[m]->setFixedWidth(85);
-        for(int b=1; b<=8; ++b) m_comboEditBar[m]->addItem(QString("Pattern %1").arg(b));
-
-        QPushButton* btnRoll = new QPushButton("🎹 Roll");
-        btnRoll->setStyleSheet("background-color: #4a0077; font-weight: bold;");
-        connect(btnRoll, &QPushButton::clicked, this, [this, m]() { onPianoRollClicked(m); });
-
-        row->addWidget(lblName);
-        row->addWidget(btnCfg);
-        row->addWidget(m_comboEditBar[m]);
-        row->addWidget(btnRoll);
-        melodicLayout->addLayout(row);
+        QHBoxLayout* row = new QHBoxLayout(); QLabel* lblName = new QLabel("<b>" + m_melodic[m].name + "</b>"); lblName->setFixedWidth(45);
+        QPushButton* btnCfg = new QPushButton("⚙️"); btnCfg->setFixedWidth(30); connect(btnCfg, &QPushButton::clicked, this, [this, m]() { onMelodicConfigClicked(m); });
+        m_comboEditBar[m] = new QComboBox(); m_comboEditBar[m]->setFixedWidth(85); for(int b=1; b<=8; ++b) m_comboEditBar[m]->addItem(QString("Pattern %1").arg(b));
+        QPushButton* btnRoll = new QPushButton("🎹 Roll"); btnRoll->setStyleSheet("background-color: #4a0077; font-weight: bold;"); connect(btnRoll, &QPushButton::clicked, this, [this, m]() { onPianoRollClicked(m); });
+        row->addWidget(lblName); row->addWidget(btnCfg); row->addWidget(m_comboEditBar[m]); row->addWidget(btnRoll); melodicLayout->addLayout(row);
     }
-    mainLayout->addWidget(melodicBox);
-    mainLayout->addStretch();
+    mainLayout->addWidget(melodicBox); mainLayout->addStretch(); m_mainTabs->addTab(mainScroll, "Grid Sequencer");
+
+    QWidget* engineTab = new QWidget(); engineTab->setStyleSheet("QWidget { background-color: #1e1e1e; color: #e0e0e0; font-size: 11px; }");
+    QHBoxLayout* engineLayout = new QHBoxLayout(engineTab);
+
+    QGroupBox* grpSynth = new QGroupBox("Engine Selection (Headless)");
+    QVBoxLayout* synthLayout = new QVBoxLayout(grpSynth);
+    m_cmbSynthSelector = new QComboBox(); m_cmbSynthSelector->addItems({"Xpressive (Legacy)"});
+    connect(m_cmbSynthSelector, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onSynthTypeChanged);
+    synthLayout->addWidget(m_cmbSynthSelector);
+
+    m_synthUIStack = new QStackedWidget(); m_synthUIStack->addWidget(new QLabel("Xpressive controlled via Grid Sequencer tab."));
+
+    QWidget* hiddenContainer = new QWidget(this); hiddenContainer->hide();
+    m_toVol = new QDoubleSpinBox(hiddenContainer); m_toW1 = new QComboBox(hiddenContainer); m_toC1 = new QDoubleSpinBox(hiddenContainer); m_toV1 = new QDoubleSpinBox(hiddenContainer);
+    m_lbVol = new QDoubleSpinBox(hiddenContainer); m_lbWave = new QComboBox(hiddenContainer); m_lbCut = new QDoubleSpinBox(hiddenContainer); m_lbRes = new QDoubleSpinBox(hiddenContainer); m_lbDec = new QDoubleSpinBox(hiddenContainer);
+
+    synthLayout->addWidget(m_synthUIStack); engineLayout->addWidget(grpSynth);
+
+    QGroupBox* grpEffects = new QGroupBox("Multi-Track Effect Rack");
+    QVBoxLayout* fxLayout = new QVBoxLayout(grpEffects);
+    m_lstEffects = new QListWidget(); fxLayout->addWidget(m_lstEffects);
+    QGridLayout* fxControls = new QGridLayout();
+    m_cmbAvailableEffects = new QComboBox(); m_cmbAvailableEffects->addItems({"Dummy Drive (Test)", "LMMS Bitcrush", "LMMS Stereo Delay", "Lush Reverb (Freeverb Alg)"});
+    m_cmbFxTarget = new QComboBox(); m_cmbFxTarget->addItem("Master Bus");
+    for(int i=0; i<6; ++i) m_cmbFxTarget->addItem("Drum " + QString::number(i+1) + " (" + m_channels[i].name + ")");
+    for(int i=0; i<3; ++i) m_cmbFxTarget->addItem("Synth " + QString::number(i+1) + " (" + m_melodic[i].name + ")");
+    m_btnAddEffect = new QPushButton("Insert FX"); m_btnRemoveEffect = new QPushButton("Remove Selected");
+    connect(m_btnAddEffect, &QPushButton::clicked, this, &MainWindow::onAddEffectClicked);
+    connect(m_btnRemoveEffect, &QPushButton::clicked, this, &MainWindow::onRemoveEffectClicked);
+    fxControls->addWidget(new QLabel("Effect:"), 0, 0); fxControls->addWidget(m_cmbAvailableEffects, 0, 1);
+    fxControls->addWidget(new QLabel("Route To:"), 1, 0); fxControls->addWidget(m_cmbFxTarget, 1, 1);
+    fxControls->addWidget(m_btnAddEffect, 2, 0); fxControls->addWidget(m_btnRemoveEffect, 2, 1);
+    fxLayout->addLayout(fxControls); engineLayout->addWidget(grpEffects); m_mainTabs->addTab(engineTab, "DSP & FX Routing");
 
     connect(m_btnPlay, &QPushButton::clicked, this, &MainWindow::onPlayClicked);
     connect(m_btnTestString, &QPushButton::clicked, this, &MainWindow::onTestStringClicked);
     connect(m_btnExport, &QPushButton::clicked, this, &MainWindow::onExportMmpClicked);
     connect(m_btnImport, &QPushButton::clicked, this, &MainWindow::onImportMmpClicked);
-
     updatePlaybackState();
 }
 
-void MainWindow::onArrangerClicked(int row, int bar) {
-    if (row == 0) {
-        m_arrangerState[row][bar] = (m_arrangerState[row][bar] == 0) ? 1 : 0;
-    } else {
-        m_arrangerState[row][bar] = (m_arrangerState[row][bar] + 1) % 9;
-    }
+void MainWindow::onSynthTypeChanged(int index) { m_synthUIStack->setCurrentIndex(index); m_synthEngine->setInstrumentType(index == 0 ? InstrumentType::Xpressive : index == 1 ? InstrumentType::TripleOscillator : InstrumentType::Lb302); }
+void MainWindow::onHeadlessSynthParamChanged() {}
 
-    QPushButton* btn = m_arrangerGrid[row][bar];
-    if (m_arrangerState[row][bar] == 0) {
-        btn->setText("");
-        btn->setStyleSheet("QPushButton { background-color: #333; border: 1px solid #555; border-radius: 3px; }");
-    } else {
-        if (row == 0) btn->setText("D");
-        else btn->setText(QString::number(m_arrangerState[row][bar]));
-        btn->setStyleSheet("QPushButton { background-color: #ffff00; color: black; font-weight: bold; border: 1px solid #fff; border-radius: 3px; }");
+void MainWindow::onAddEffectClicked() {
+    int fxType = m_cmbAvailableEffects->currentIndex(); int target = m_cmbFxTarget->currentIndex(); m_synthEngine->addEffect(target, fxType);
+    QListWidgetItem* item = new QListWidgetItem(m_cmbAvailableEffects->currentText() + " -> " + m_cmbFxTarget->currentText());
+    item->setData(Qt::UserRole, target); item->setData(Qt::UserRole + 1, fxType); m_lstEffects->addItem(item);
+}
+
+void MainWindow::onRemoveEffectClicked() {
+    QListWidgetItem* item = m_lstEffects->takeItem(m_lstEffects->currentRow());
+    if (item) {
+        delete item; m_synthEngine->clearEffects();
+        for(int i = 0; i < m_lstEffects->count(); ++i) { QListWidgetItem* itm = m_lstEffects->item(i); m_synthEngine->addEffect(itm->data(Qt::UserRole).toInt(), itm->data(Qt::UserRole + 1).toInt()); }
     }
+}
+
+void MainWindow::onArrangerClicked(int row, int bar) {
+    if (row == 0) m_arrangerState[row][bar] = (m_arrangerState[row][bar] == 0) ? 1 : 0; else m_arrangerState[row][bar] = (m_arrangerState[row][bar] + 1) % 9;
+    QPushButton* btn = m_arrangerGrid[row][bar];
+    if (m_arrangerState[row][bar] == 0) { btn->setText(""); btn->setStyleSheet("background-color: #333; border: 1px solid #555; border-radius: 3px;"); }
+    else { btn->setText(row == 0 ? "D" : QString::number(m_arrangerState[row][bar])); btn->setStyleSheet("background-color: #ffff00; color: black; font-weight: bold; border: 1px solid #fff; border-radius: 3px;"); }
     updatePlaybackState();
 }
 
 void MainWindow::updatePlaybackState() {
     QMutexLocker locker(&m_playState.mutex);
     m_playState.bpm = m_spinBpm->value();
-
     for (int r = 0; r < NUM_CHANNELS; ++r) {
-        m_playState.drums[r].a = m_channels[r].attack;
-        m_playState.drums[r].d = m_channels[r].decay;
-        m_playState.drums[r].s = m_channels[r].sustain;
-        m_playState.drums[r].vol = m_channels[r].vol;
-        m_playState.drums[r].baseF = (r==0)?55.0 : (r==1)?200.0 : (r==2||r==3)?8000.0 : (r==4)?440.0 : 110.0;
-        m_playState.drums[r].isK = (r==0);
-        QString w1 = m_channels[r].w1.toLower();
-        m_playState.drums[r].wType = w1.contains("sin") ? 0 : w1.contains("rand") ? 1 : w1.contains("saw") ? 2 : 3;
-
-        for (int c = 0; c < NUM_STEPS; ++c) {
-            m_playState.drumSteps[r][c] = m_grid[r][c]->isChecked();
-        }
+        m_playState.drums[r].a = m_channels[r].attack; m_playState.drums[r].d = m_channels[r].decay; m_playState.drums[r].s = m_channels[r].sustain; m_playState.drums[r].vol = m_channels[r].vol; m_playState.drums[r].baseF = (r==0)?55.0 : (r==1)?200.0 : (r==2||r==3)?8000.0 : (r==4)?440.0 : 110.0; m_playState.drums[r].isK = (r==0); m_playState.drums[r].filter = m_channels[r].filter;
+        for (int c = 0; c < NUM_STEPS; ++c) m_playState.drumSteps[r][c] = m_grid[r][c]->isChecked();
     }
-
     for (int m = 0; m < NUM_MELODIC; ++m) {
-        m_playState.synths[m].a = m_melodic[m].attack;
-        m_playState.synths[m].d = m_melodic[m].decay;
-        m_playState.synths[m].s = m_melodic[m].sustain;
-        m_playState.synths[m].r = m_melodic[m].release;
-        m_playState.synths[m].vol = m_melodic[m].vol;
-        m_playState.synths[m].useAdsr = m_melodic[m].useAdsr;
-        QString w1 = m_melodic[m].w1.toLower();
-        m_playState.synths[m].w1Type = w1.contains("sin") ? 0 : w1.contains("saw") ? 2 : 3;
+        m_playState.synths[m].a = m_melodic[m].attack; m_playState.synths[m].d = m_melodic[m].decay; m_playState.synths[m].s = m_melodic[m].sustain; m_playState.synths[m].r = m_melodic[m].release; m_playState.synths[m].vol = m_melodic[m].vol; m_playState.synths[m].useAdsr = m_melodic[m].useAdsr; m_playState.synths[m].filter = m_melodic[m].filter;
+        for (int b = 0; b < 8; ++b) for (int key = 0; key < 96; ++key) for (int c = 0; c < NUM_STEPS; ++c) m_playState.synthGrid[m][b][key][c] = m_melodic[m].grid[b][key][c];
+    }
+    for (int t = 0; t < 4; ++t) for (int b = 0; b < 8; ++b) m_playState.arranger[t][b] = m_arrangerState[t][b];
+    for (int i = 0; i < 2; ++i) { m_playState.automations[i].target = m_autoTracks[i].target; for (int step = 0; step < 16; ++step) m_playState.automations[i].steps[step] = m_autoTracks[i].steps[step]; }
+}
 
-        for (int b = 0; b < 8; ++b) {
-            for (int key = 0; key < 96; ++key) {
-                for (int c = 0; c < NUM_STEPS; ++c) {
-                    m_playState.synthGrid[m][b][key][c] = m_melodic[m].grid[b][key][c];
-                }
-            }
+void MainWindow::recompileASTs() {
+    auto newAsts = std::make_shared<CompiledASTs>();
+    for (int r = 0; r < NUM_CHANNELS; ++r) {
+        try { newAsts->drums[r].o1 = std::shared_ptr<XpressiveParser::Node>(XpressiveParser::parse(m_channels[r].o1.toStdString()).release()); } catch (...) {}
+        try { newAsts->drums[r].w1 = std::shared_ptr<XpressiveParser::Node>(XpressiveParser::parse(m_channels[r].w1.toStdString()).release()); } catch (...) {}
+    }
+    for (int m = 0; m < NUM_MELODIC; ++m) {
+        for (int key = 0; key < 96; ++key) {
+            try { newAsts->synths[m][key].o1 = std::shared_ptr<XpressiveParser::Node>(XpressiveParser::parse(m_melodic[m].o1.toStdString()).release()); } catch (...) {}
+            try { newAsts->synths[m][key].w1 = std::shared_ptr<XpressiveParser::Node>(XpressiveParser::parse(m_melodic[m].w1.toStdString()).release()); } catch (...) {}
+            try { newAsts->synths[m][key].w2 = std::shared_ptr<XpressiveParser::Node>(XpressiveParser::parse(m_melodic[m].w2.toStdString()).release()); } catch (...) {}
+            try { newAsts->synths[m][key].w3 = std::shared_ptr<XpressiveParser::Node>(XpressiveParser::parse(m_melodic[m].w3.toStdString()).release()); } catch (...) {}
         }
     }
-
-    for (int t = 0; t < 4; ++t) {
-        for (int b = 0; b < 8; ++b) {
-            m_playState.arranger[t][b] = m_arrangerState[t][b];
-        }
-    }
-
-for (int i = 0; i < 4; ++i) {
-        m_playState.automations[i].target = m_autoTracks[i].target;
-        for (int step = 0; step < 16; ++step) {
-            m_playState.automations[i].steps[step] = m_autoTracks[i].steps[step];
-        }
-    }
-
+    QMutexLocker locker(&m_playState.mutex);
+    m_playState.asts = newAsts;
 }
 
-void MainWindow::onConfigClicked(int index) {
-    ChannelConfigDialog dlg(m_channels[index], this);
-    if (dlg.exec() == QDialog::Accepted) { dlg.saveToConfig(m_channels[index]); updatePlaybackState(); }
-}
-
-void MainWindow::onMelodicConfigClicked(int index) {
-    MelodicConfigDialog dlg(m_melodic[index], this);
-    if (dlg.exec() == QDialog::Accepted) { dlg.saveToConfig(m_melodic[index]); updatePlaybackState(); }
-}
-
-void MainWindow::onPianoRollClicked(int index) {
-    int pat = m_comboEditBar[index]->currentIndex();
-    PianoRollDialog dlg(m_melodic[index].grid[pat], m_melodic[index].name + " - Pattern " + QString::number(pat+1), this);
-    if (dlg.exec() == QDialog::Accepted) { dlg.saveToGrid(m_melodic[index].grid[pat]); updatePlaybackState(); }
-}
-
-QString MainWindow::getAdsrString(double a, double d, double s, double r) {
-    if (a == 0 && d == 0 && r == 0) return "1.0";
-    QString attackStr = (a > 0) ? QString("(lt / %1)").arg(a) : "1.0";
-    QString decayStr = (d > 0) ? QString("(1.0 - (lt - %1) * ((1.0 - %2) / %3))").arg(a).arg(s).arg(d) : QString::number(s);
-    return QString("((lt < %1) ? %2 : ((lt < %3) ? %4 : %5))").arg(a).arg(attackStr).arg(a + d).arg(decayStr).arg(s);
-}
+void MainWindow::onConfigClicked(int index) { ChannelConfigDialog dlg(m_channels[index], this); if (dlg.exec() == QDialog::Accepted) { dlg.saveToConfig(m_channels[index]); updatePlaybackState(); recompileASTs(); } }
+void MainWindow::onMelodicConfigClicked(int index) { MelodicConfigDialog dlg(m_melodic[index], this); if (dlg.exec() == QDialog::Accepted) { dlg.saveToConfig(m_melodic[index]); updatePlaybackState(); recompileASTs(); } }
+void MainWindow::onPianoRollClicked(int index) { int pat = m_comboEditBar[index]->currentIndex(); PianoRollDialog dlg(m_melodic[index].grid[pat], m_melodic[index].name + " - Pattern " + QString::number(pat+1), this); if (dlg.exec() == QDialog::Accepted) { dlg.saveToGrid(m_melodic[index].grid[pat]); updatePlaybackState(); } }
 
 void MainWindow::onPlayClicked() {
     if (m_btnPlay->text().contains("Play")) {
@@ -340,143 +263,173 @@ void MainWindow::onPlayClicked() {
         std::vector<double> noteFreqs(96);
         for(int key=0; key<96; ++key) noteFreqs[key] = 440.0 * std::pow(2.0, ((107 - key) - 69) / 12.0);
 
-        m_synthEngine->setAudioSource([this, noteFreqs](double t) mutable -> double {
-            QMutexLocker locker(&m_playState.mutex);
+        m_synthEngine->setAudioSource([this, noteFreqs,
+                                       cachedAsts = std::shared_ptr<CompiledASTs>(),
+                                       updateCounter = 0,
+                                       lastGlobalStep = -1L,
+                                       drumActive = std::array<bool, 6>{},
+                                       drumNoteTimes = std::array<double, 6>{},
+                                       synthActive = std::array<std::array<bool, 96>, 3>{},
+                                       synthNoteTimes = std::array<std::array<double, 96>, 3>{},
+                                       synthLenSteps = std::array<std::array<int, 96>, 3>{}
+        ](double t, double outDrums[6], double outSynths[3], double& masterVol, double& masterDrive) mutable {
+
+
+            if (updateCounter++ % 256 == 0) {
+                if (m_playState.mutex.tryLock()) {
+                    cachedAsts = m_playState.asts;
+                    m_playState.mutex.unlock();
+                }
+            }
+            if (!cachedAsts) return;
+
             double stepRate = (m_playState.bpm / 60.0) * 4.0;
             long globalStep = (long)std::floor(t * stepRate);
             int seqStep = globalStep % 16;
             int currentBar = (globalStep / 16) % 8;
             double lt = std::fmod(t, 1.0 / stepRate);
-            double mix = 0.0;
 
-            static uint32_t rngSeed = 123456789;
 
-            if (m_playState.arranger[0][currentBar] == 1) {
-                for(int r=0; r<6; ++r) {
-                    if (m_playState.drumSteps[r][seqStep]) {
-                        const auto& trk = m_playState.drums[r];
-                        double env = trk.s;
-                        if (lt < trk.a && trk.a > 0.001) env = lt / trk.a;
-                        else if (lt < trk.a + trk.d && trk.d > 0.001) env = 1.0 - ((lt - trk.a) / trk.d) * (1.0 - trk.s);
-                        else if (trk.a == 0 && trk.d == 0) env = 1.0;
+            if (globalStep != lastGlobalStep) {
+                lastGlobalStep = globalStep;
 
-                        double osc = 0.0;
-                        if (trk.isK) {
-                            double osc1 = std::sin(2.0 * M_PI * t * 40.0) * std::exp(-lt * 60.0);
-                            double osc2 = std::sin(2.0 * M_PI * t * 40.0) * std::exp(-lt * 3.0) * 0.3;
-                            osc = std::max(-1.0, std::min(1.0, osc1 + osc2));
-                        }
-                        else if (r == 1) {
-                            double oscTone = std::sin(2.0 * M_PI * t * trk.baseF * (180.0/440.0)) * std::exp(-lt * 6.0);
-                            rngSeed = rngSeed * 1664525 + 1013904223;
-                            double noise = ((static_cast<float>(rngSeed) / 4294967296.0f) * 2.0f - 1.0f) * std::exp(-lt * 12.0);
-                            osc = oscTone + noise;
-                        }
-                        else {
-                            double phase = t * trk.baseF;
-                            if (trk.wType == 0) osc = std::sin(2.0 * M_PI * phase);
-                            else if (trk.wType == 1) { rngSeed = rngSeed * 1664525 + 1013904223; osc = (static_cast<float>(rngSeed) / 4294967296.0f) * 2.0f - 1.0f; }
-                            else if (trk.wType == 2) osc = 2.0 * std::fmod(phase, 1.0) - 1.0;
-                            else osc = (std::fmod(phase, 1.0) < 0.5) ? 1.0 : -1.0;
-                        }
-                        mix += osc * env * trk.vol;
-                    }
-                }
-            }
-
-for(int m = 0; m < 3; ++m) {
-                int patIdx = m_playState.arranger[m+1][currentBar];
-                if (patIdx > 0) {
-                    int p = patIdx - 1;
-                    const auto& trk = m_playState.synths[m];
-                    
-                    for(int key = 0; key < 96; ++key) {
-                        
-
-                        bool activeThisStep = false;
-                        double noteTime = 0.0;
-                        int noteLenSteps = 0;
-
-                        for (int c = 0; c <= seqStep; ++c) {
-                            if (m_playState.synthGrid[m][p][key][c].active) {
-
-                                if (c + m_playState.synthGrid[m][p][key][c].length > seqStep) {
-                                    activeThisStep = true;
-
-                                    noteTime = ((seqStep - c) / stepRate) + lt; 
-                                    noteLenSteps = m_playState.synthGrid[m][p][key][c].length;
-                                    break;
-                                }
+                if (m_playState.arranger[0][currentBar] == 1) {
+                    for(int r=0; r<6; ++r) {
+                        drumActive[r] = false;
+                        for (int c = seqStep; c >= 0; --c) {
+                            if (m_playState.drumSteps[r][c]) {
+                                drumActive[r] = true; drumNoteTimes[r] = (seqStep - c) / stepRate; break;
                             }
                         }
-
-                        if (activeThisStep) {
-                            double noteDur = noteLenSteps / stepRate;
-                            double env = 1.0;
-                            
-
-                            if (trk.useAdsr) {
-                                env = trk.s;
-                                
-
-                                if (noteTime < trk.a && trk.a > 0.001) {
-                                    env = noteTime / trk.a;
-                                } else if (noteTime < trk.a + trk.d && trk.d > 0.001) {
-                                    env = 1.0 - ((noteTime - trk.a) / trk.d) * (1.0 - trk.s);
-                                }
-                                
-
-                                if (noteTime >= noteDur) {
-                                    double releaseTime = noteTime - noteDur;
-                                    if (releaseTime < trk.r && trk.r > 0.001) {
-
-                                        env = env * (1.0 - (releaseTime / trk.r)); 
-                                    } else {
-                                        env = 0.0;
+                        if (!drumActive[r]) {
+                            int prevBar = (currentBar - 1 + 8) % 8;
+                            if (m_playState.arranger[0][prevBar] == 1) {
+                                for (int c = 15; c > seqStep; --c) {
+                                    if (m_playState.drumSteps[r][c]) {
+                                        drumActive[r] = true; drumNoteTimes[r] = ((seqStep + 16) - c) / stepRate; break;
                                     }
                                 }
                             }
+                        }
+                    }
+                }
 
-                            if (env > 0.0001) {
-                                double freq = noteFreqs[key];
-                                double osc = 0.0, phase = t * freq;
-
-                                if (trk.w1Type == 0) osc = std::sin(2.0 * M_PI * phase);
-                                else if (trk.w1Type == 2) osc = 2.0 * std::fmod(phase, 1.0) - 1.0;
-                                else osc = (std::fmod(phase, 1.0) < 0.5) ? 1.0 : -1.0;
-
-                                mix += osc * env * trk.vol;
+                for(int m = 0; m < 3; ++m) {
+                    int patIdx = m_playState.arranger[m+1][currentBar];
+                    if (patIdx > 0) {
+                        for(int key = 0; key < 96; ++key) {
+                            synthActive[m][key] = false;
+                            for (int c = seqStep; c >= 0; --c) {
+                                if (m_playState.synthGrid[m][patIdx-1][key][c].active) {
+                                    int endStep = c + m_playState.synthGrid[m][patIdx-1][key][c].length;
+                                    if (endStep > seqStep || (m_playState.synths[m].useAdsr && ((seqStep - endStep) / stepRate) < m_playState.synths[m].r)) {
+                                        synthActive[m][key] = true; synthNoteTimes[m][key] = (seqStep - c) / stepRate; synthLenSteps[m][key] = m_playState.synthGrid[m][patIdx-1][key][c].length; break;
+                                    }
+                                }
+                            }
+                            if (!synthActive[m][key]) {
+                                int prevBar = (currentBar - 1 + 8) % 8; int prevPatIdx = m_playState.arranger[m+1][prevBar];
+                                if (prevPatIdx > 0) {
+                                    for (int c = 15; c >= 0; --c) {
+                                        if (m_playState.synthGrid[m][prevPatIdx-1][key][c].active) {
+                                            int endStep = c + m_playState.synthGrid[m][prevPatIdx-1][key][c].length;
+                                            if (endStep > (seqStep + 16) || (m_playState.synths[m].useAdsr && (((seqStep + 16) - endStep) / stepRate) < m_playState.synths[m].r)) {
+                                                synthActive[m][key] = true; synthNoteTimes[m][key] = ((seqStep + 16) - c) / stepRate; synthLenSteps[m][key] = m_playState.synthGrid[m][prevPatIdx-1][key][c].length; break;
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
-}
-            }
-            
-            double finalMix = std::max(-1.0, std::min(mix, 1.0));
-            
-
-            double currentMasterVol = 1.0;
-            double currentDrive = 1.0;
-
-            for (int i = 0; i < 4; ++i) {
-                double autoVal = m_playState.automations[i].steps[seqStep];
-                
-
-                if (m_playState.automations[i].target == AutoTarget::MasterVolume) {
-                    currentMasterVol = autoVal * 2.0;
-                } 
-                else if (m_playState.automations[i].target == AutoTarget::MasterDrive) {
-                    currentDrive = 1.0 + (autoVal * 9.0);
                 }
             }
 
 
-            finalMix *= currentMasterVol;
+            if (m_playState.arranger[0][currentBar] == 1) {
+                for(int r=0; r<6; ++r) {
+                    if (drumActive[r] && cachedAsts->drums[r].o1) {
+                        const auto& trk = m_playState.drums[r];
+                        double noteTime = drumNoteTimes[r] + lt;
+                        double env = trk.s;
+
+                        if (noteTime < trk.a && trk.a > 0.001) env = noteTime / trk.a;
+                        else if (noteTime < trk.a + trk.d && trk.d > 0.001) env = 1.0 - ((noteTime - trk.a) / trk.d) * (1.0 - trk.s);
+                        else if (trk.a == 0 && trk.d == 0) env = 1.0;
 
 
-            m_masterEffect.setParameter(0, currentDrive); 
-            
-            return m_masterEffect.process(finalMix);
+                        XpressiveParser::Env xEnv; xEnv.t = noteTime; xEnv.tempo = m_playState.bpm; xEnv.srate = 44100.0; xEnv.f = trk.baseF;
+                        xEnv.w1 = cachedAsts->drums[r].w1.get();
+
+                        double osc = cachedAsts->drums[r].o1->eval(xEnv);
+
+                        if (trk.filter.enabled) {
+                            double eC = trk.filter.cutS;
+                            if (noteTime < trk.filter.cutA && trk.filter.cutA > 0) eC = noteTime / trk.filter.cutA;
+                            else if (noteTime < trk.filter.cutA + trk.filter.cutD && trk.filter.cutD > 0) eC = 1.0 - ((noteTime - trk.filter.cutA) / trk.filter.cutD) * (1.0 - trk.filter.cutS);
+
+                            double eR = trk.filter.resS;
+                            if (noteTime < trk.filter.resA && trk.filter.resA > 0) eR = noteTime / trk.filter.resA;
+                            else if (noteTime < trk.filter.resA + trk.filter.resD && trk.filter.resD > 0) eR = 1.0 - ((noteTime - trk.filter.resA) / trk.filter.resD) * (1.0 - trk.filter.resS);
+
+                            osc = m_playState.drumFilters[r].process(trk.filter.type, osc, trk.filter.cutBase + eC * trk.filter.cutEnvAmt, trk.filter.resBase + eR * trk.filter.resEnvAmt, 44100.0);
+                        }
+                        outDrums[r] += osc * env * trk.vol;
+                    }
+                }
+            }
+
+            for(int m = 0; m < 3; ++m) {
+                for(int key = 0; key < 96; ++key) {
+                    if (synthActive[m][key] && cachedAsts->synths[m][key].o1) {
+                        const auto& trk = m_playState.synths[m];
+                        double noteTime = synthNoteTimes[m][key] + lt;
+                        double noteDur = synthLenSteps[m][key] / stepRate;
+                        double env = 1.0;
+
+                        if (trk.useAdsr) {
+                            env = trk.s;
+                            if (noteTime < trk.a && trk.a > 0.001) env = noteTime / trk.a;
+                            else if (noteTime < trk.a + trk.d && trk.d > 0.001) env = 1.0 - ((noteTime - trk.a) / trk.d) * (1.0 - trk.s);
+
+                            if (noteTime >= noteDur) {
+                                double rT = noteTime - noteDur;
+                                if (rT < trk.r && trk.r > 0.001) env = env * (1.0 - (rT / trk.r));
+                                else env = 0.0;
+                            }
+                        }
+
+                        if (env > 0.0001) {
+
+                            XpressiveParser::Env xEnv; xEnv.t = noteTime; xEnv.tempo = m_playState.bpm; xEnv.srate = 44100.0; xEnv.f = noteFreqs[key];
+                            xEnv.w1 = cachedAsts->synths[m][key].w1.get();
+                            xEnv.w2 = cachedAsts->synths[m][key].w2.get();
+                            xEnv.w3 = cachedAsts->synths[m][key].w3.get();
+
+                            double osc = cachedAsts->synths[m][key].o1->eval(xEnv);
+
+                            if (trk.filter.enabled) {
+                                double eC = trk.filter.cutS;
+                                if (noteTime < trk.filter.cutA && trk.filter.cutA > 0) eC = noteTime / trk.filter.cutA;
+                                else if (noteTime < trk.filter.cutA + trk.filter.cutD && trk.filter.cutD > 0) eC = 1.0 - ((noteTime - trk.filter.cutA) / trk.filter.cutD) * (1.0 - trk.filter.cutS);
+
+                                double eR = trk.filter.resS;
+                                if (noteTime < trk.filter.resA && trk.filter.resA > 0) eR = noteTime / trk.filter.resA;
+                                else if (noteTime < trk.filter.resA + trk.filter.resD && trk.filter.resD > 0) eR = 1.0 - ((noteTime - trk.filter.resA) / trk.filter.resD) * (1.0 - trk.filter.resS);
+
+                                osc = m_playState.synthFilters[m][key].process(trk.filter.type, osc, trk.filter.cutBase + eC * trk.filter.cutEnvAmt, trk.filter.resBase + eR * trk.filter.resEnvAmt, 44100.0);
+                            }
+                            outSynths[m] += osc * env * trk.vol;
+                        }
+                    }
+                }
+            }
+
+            for (int i = 0; i < 4; ++i) {
+                double aV = m_playState.automations[i].steps[seqStep];
+                if (m_playState.automations[i].target == AutoTarget::MasterVolume) masterVol = aV * 2.0;
+                else if (m_playState.automations[i].target == AutoTarget::MasterDrive) masterDrive = 1.0 + (aV * 9.0);
+            }
         });
 
         m_synthEngine->start();
@@ -490,356 +443,38 @@ for(int m = 0; m < 3; ++m) {
 }
 
 void MainWindow::onTestStringClicked() {
-    if (m_btnTestString->text().contains("Stop")) {
-        m_synthEngine->stop();
-        m_btnTestString->setText("🧪 Test Expr");
-        m_btnPlay->setEnabled(true);
-        return;
-    }
-
+    if (m_btnTestString->text().contains("Stop")) { m_synthEngine->stop(); m_btnTestString->setText("🧪 Test Expr"); m_btnPlay->setEnabled(true); return; }
     QString code = m_txtTestString->text();
     try {
-        auto ast = XpressiveParser::parse(code.toStdString());
-        std::shared_ptr<XpressiveParser::Node> sharedAst(ast.release());
-
-        double testBpm = m_spinBpm->value();
-
-        m_synthEngine->setAudioSource([sharedAst, testBpm](double t) mutable -> double {
-            XpressiveParser::Env env;
-            env.t = t;
-            env.tempo = testBpm;
-            env.srate = 44100.0;
-            env.f = 440.0;
-
-            double val = sharedAst->eval(env);
-            return std::max(-1.0, std::min(val, 1.0));
+        auto ast = XpressiveParser::parse(code.toStdString()); std::shared_ptr<XpressiveParser::Node> sA(ast.release()); double bpm = m_spinBpm->value();
+        m_synthEngine->setAudioSource([sA, bpm](double t, double d[6], double s[3], double& mV, double& mD) mutable {
+            XpressiveParser::Env env; env.t = t; env.tempo = bpm; env.srate = 44100.0; env.f = 440.0; mV = 1.0; mD = 1.0; d[0] = std::max(-1.0, std::min(sA->eval(env), 1.0));
         });
-
-        m_synthEngine->start();
-        m_btnTestString->setText("⏹ Stop Test");
-        if (m_btnPlay->text().contains("Stop")) onPlayClicked();
-        m_btnPlay->setEnabled(false);
-
-    } catch (std::exception& e) {
-        QMessageBox::warning(this, "Parse Error", "Check your syntax: " + QString(e.what()));
-    }
+        m_synthEngine->start(); m_btnTestString->setText("⏹ Stop Test"); if (m_btnPlay->text().contains("Stop")) onPlayClicked(); m_btnPlay->setEnabled(false);
+    } catch (std::exception& e) { QMessageBox::warning(this, "Parse Error", "Syntax: " + QString(e.what())); }
 }
 
 void MainWindow::onImportMmpClicked() {
-    QString filePath = QFileDialog::getOpenFileName(this, "Open LMMS Project", "", "LMMS Project (*.mmp)");
-    if (filePath.isEmpty()) return;
-
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return;
-
-    QDomDocument doc;
-    if (!doc.setContent(&file)) { QMessageBox::warning(this, "Parse Error", "Failed to parse .mmp file format."); return; }
-
-    QDomElement root = doc.documentElement();
-    QDomElement head = root.firstChildElement("head");
-    m_spinBpm->setValue(head.attribute("bpm", "120").toInt());
-
-    // Clear state
-    for (int r = 0; r < NUM_CHANNELS; ++r) { for (int c = 0; c < NUM_STEPS; ++c) m_grid[r][c]->setChecked(false); }
-    for (int t = 0; t < 4; ++t) {
-        for (int b = 0; b < 8; ++b) {
-            m_arrangerState[t][b] = 0;
-            if (t > 0) {
-                for (int k = 0; k < 96; ++k) { for (int c = 0; c < NUM_STEPS; ++c) m_melodic[t-1].grid[b][k][c].active = false; }
+    QString filePath = QFileDialog::getOpenFileName(this, "Open LMMS Project", "", "LMMS Project (*.mmp)"); if (filePath.isEmpty()) return;
+    int bpm = 120; bool drumSteps[6][16] = {{false}};
+    if (ProjectIO::loadMmp(filePath, bpm, m_channels, drumSteps, m_arrangerState, m_melodic)) {
+        m_spinBpm->setValue(bpm);
+        for (int r = 0; r < 6; ++r) { for (int c = 0; c < 16; ++c) m_grid[r][c]->setChecked(drumSteps[r][c]); }
+        for(int r = 0; r < 4; ++r) {
+            for(int b = 0; b < 8; ++b) {
+                int hold = m_arrangerState[r][b]; m_arrangerState[r][b] = 0;
+                if (hold > 0) { m_arrangerState[r][b] = hold - 1; onArrangerClicked(r, b); }
+                else { onArrangerClicked(r, b); onArrangerClicked(r, b); }
             }
         }
-    }
-
-    QDomElement song = root.firstChildElement("song");
-    QDomElement trackContainer = song.firstChildElement("trackcontainer");
-
-    QDomNode n = trackContainer.firstChild();
-    while (!n.isNull()) {
-        QDomElement e = n.toElement();
-        if (!e.isNull() && e.tagName() == "track") {
-            if (e.attribute("type") == "1") {
-                QDomNodeList bbtcos = e.elementsByTagName("bbtco");
-                for (int i=0; i<bbtcos.size(); ++i) {
-                    int bar = bbtcos.at(i).toElement().attribute("pos").toInt() / 192;
-                    if (bar >= 0 && bar < 8) m_arrangerState[0][bar] = 1;
-                }
-
-                QDomElement bbTc = e.firstChildElement("bbtrack").firstChildElement("trackcontainer");
-                QDomNodeList bbTracks = bbTc.elementsByTagName("track");
-                for (int i=0; i<bbTracks.size(); ++i) {
-                    QDomElement t = bbTracks.at(i).toElement();
-                    QString name = t.attribute("name");
-                    int dIdx = -1;
-                    for(int r=0; r<NUM_CHANNELS; ++r) if(m_channels[r].name == name) dIdx = r;
-
-                    if (dIdx != -1) {
-                        QDomElement instTrack = t.firstChildElement("instrumenttrack");
-                        QDomElement xpressive = instTrack.firstChildElement("instrument").firstChildElement("xpressive");
-                        if (xpressive.isNull()) xpressive = instTrack.firstChildElement("instrument").firstChildElement("Xpressive");
-                        if (!xpressive.isNull()) {
-                            m_channels[dIdx].w1 = xpressive.hasAttribute("W1") ? xpressive.attribute("W1") : xpressive.attribute("w1");
-                            m_channels[dIdx].o1 = xpressive.hasAttribute("O1") ? xpressive.attribute("O1") : xpressive.attribute("o1");
-                            m_channels[dIdx].attack = xpressive.attribute("env_atk").toDouble();
-                            m_channels[dIdx].decay = xpressive.attribute("env_dec").toDouble();
-                            m_channels[dIdx].sustain = xpressive.attribute("env_sus").toDouble();
-                            m_channels[dIdx].release = xpressive.attribute("env_rel").toDouble();
-                        }
-                        QDomElement elvol = instTrack.firstChildElement("eldata").firstChildElement("elvol");
-                        if (!elvol.isNull()) {
-                            m_channels[dIdx].attack = elvol.attribute("att", QString::number(m_channels[dIdx].attack)).toDouble();
-                            m_channels[dIdx].decay = elvol.attribute("dec", QString::number(m_channels[dIdx].decay)).toDouble();
-                            m_channels[dIdx].sustain = elvol.attribute("sustain", QString::number(m_channels[dIdx].sustain)).toDouble();
-                            m_channels[dIdx].release = elvol.attribute("rel", QString::number(m_channels[dIdx].release)).toDouble();
-                        }
-
-                        QDomElement pat = t.firstChildElement("pattern");
-                        if (!pat.isNull()) {
-                            QDomNodeList notes = pat.elementsByTagName("note");
-                            for (int nIdx=0; nIdx<notes.size(); ++nIdx) {
-                                int step = notes.at(nIdx).toElement().attribute("pos").toInt() / 12;
-                                if (step >= 0 && step < NUM_STEPS) m_grid[dIdx][step]->setChecked(true);
-                            }
-                        }
-                    }
-                }
-            } else if (e.attribute("type") == "0") {
-                QString name = e.attribute("name");
-                int mIdx = -1; for(int m=0; m<NUM_MELODIC; ++m) if(m_melodic[m].name == name) mIdx = m;
-
-                if (mIdx != -1) {
-                    QDomElement instTrack = e.firstChildElement("instrumenttrack");
-                    QDomElement xpressive = instTrack.firstChildElement("instrument").firstChildElement("xpressive");
-                    if (xpressive.isNull()) xpressive = instTrack.firstChildElement("instrument").firstChildElement("Xpressive");
-
-                    if (!xpressive.isNull()) {
-                        m_melodic[mIdx].w1 = xpressive.hasAttribute("W1") ? xpressive.attribute("W1") : xpressive.attribute("w1");
-                        m_melodic[mIdx].w2 = xpressive.hasAttribute("W2") ? xpressive.attribute("W2") : xpressive.attribute("w2");
-                        m_melodic[mIdx].w3 = xpressive.hasAttribute("W3") ? xpressive.attribute("W3") : xpressive.attribute("w3");
-                        m_melodic[mIdx].o1 = xpressive.hasAttribute("O1") ? xpressive.attribute("O1") : xpressive.attribute("o1");
-                        m_melodic[mIdx].o2 = xpressive.hasAttribute("O2") ? xpressive.attribute("O2") : xpressive.attribute("o2");
-
-                        m_melodic[mIdx].attack = xpressive.attribute("env_atk").toDouble();
-                        m_melodic[mIdx].decay = xpressive.attribute("env_dec").toDouble();
-                        m_melodic[mIdx].sustain = xpressive.attribute("env_sus").toDouble();
-                        m_melodic[mIdx].release = xpressive.attribute("env_rel").toDouble();
-                    }
-
-                    QDomElement eldata = instTrack.firstChildElement("eldata");
-                    QDomElement elvol = eldata.firstChildElement("elvol");
-                    if (!elvol.isNull()) {
-                        m_melodic[mIdx].attack = elvol.attribute("att", QString::number(m_melodic[mIdx].attack)).toDouble();
-                        m_melodic[mIdx].decay = elvol.attribute("dec", QString::number(m_melodic[mIdx].decay)).toDouble();
-                        m_melodic[mIdx].sustain = elvol.attribute("sustain", QString::number(m_melodic[mIdx].sustain)).toDouble();
-                        m_melodic[mIdx].release = elvol.attribute("rel", QString::number(m_melodic[mIdx].release)).toDouble();
-                    }
-
-                    QDomNodeList patterns = e.elementsByTagName("pattern");
-                    for (int p = 0; p < patterns.size(); ++p) {
-                        QDomElement pat = patterns.at(p).toElement();
-                        int bar = pat.attribute("pos").toInt() / (16 * 12);
-                        if (bar >= 0 && bar < 8) {
-                            m_arrangerState[mIdx+1][bar] = bar + 1;
-                            QDomNodeList notes = pat.elementsByTagName("note");
-                            for (int nIdx = 0; nIdx < notes.size(); ++nIdx) {
-                                int step = notes.at(nIdx).toElement().attribute("pos").toInt() / 12;
-                                int key = 107 - notes.at(nIdx).toElement().attribute("key").toInt();
-                                int len = notes.at(nIdx).toElement().attribute("len", "12").toInt() / 12;
-
-                                if (step >= 0 && step < NUM_STEPS && key >= 0 && key < 96) {
-                                    m_melodic[mIdx].grid[bar][key][step].active = true;
-                                    m_melodic[mIdx].grid[bar][key][step].length = len;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        n = n.nextSibling();
-    }
-
-    for(int r=0; r<4; ++r) {
-        for(int b=0; b<8; ++b) {
-            int hold = m_arrangerState[r][b];
-            m_arrangerState[r][b] = 0;
-            if (hold > 0) {
-                m_arrangerState[r][b] = hold - 1;
-                onArrangerClicked(r, b);
-            } else {
-                onArrangerClicked(r, b); onArrangerClicked(r, b);
-            }
-        }
-    }
-    updatePlaybackState();
-    QMessageBox::information(this, "Success", "Full project loaded successfully!");
+        updatePlaybackState(); recompileASTs(); QMessageBox::information(this, "Success", "Full project loaded!");
+    } else QMessageBox::warning(this, "Error", "Failed to load project.");
 }
 
 void MainWindow::onExportMmpClicked() {
-    QString filePath = QFileDialog::getSaveFileName(this, "Save LMMS Project", "", "LMMS Project (*.mmp)");
-    if (filePath.isEmpty()) return;
-
-    QDomDocument doc;
-    QDomProcessingInstruction instr = doc.createProcessingInstruction("xml", "version=\"1.0\"");
-    doc.appendChild(instr);
-
-    QDomElement root = doc.createElement("lmms-project");
-    root.setAttribute("type", "song");
-    root.setAttribute("version", "20");
-    doc.appendChild(root);
-
-    QDomElement head = doc.createElement("head");
-    head.setAttribute("bpm", QString::number(m_spinBpm->value()));
-    root.appendChild(head);
-
-    QDomElement song = doc.createElement("song");
-    root.appendChild(song);
-
-    QDomElement trackContainer = doc.createElement("trackcontainer");
-    trackContainer.setAttribute("type", "song");
-    song.appendChild(trackContainer);
-
-    const int ticksPerStep = 12;
-
-    QDomElement bbMasterTrack = doc.createElement("track");
-    bbMasterTrack.setAttribute("name", "Beat/Bassline 0");
-    bbMasterTrack.setAttribute("type", "1");
-    trackContainer.appendChild(bbMasterTrack);
-
-    QDomElement bbTrack = doc.createElement("bbtrack");
-    bbMasterTrack.appendChild(bbTrack);
-
-    QDomElement bbTrackContainer = doc.createElement("trackcontainer");
-    bbTrackContainer.setAttribute("type", "bbtrackcontainer");
-    bbTrack.appendChild(bbTrackContainer);
-
-    for (int r = 0; r < NUM_CHANNELS; ++r) {
-        ChannelConfig& ch = m_channels[r];
-        QDomElement track = doc.createElement("track");
-        track.setAttribute("name", ch.name);
-        track.setAttribute("type", "0");
-        bbTrackContainer.appendChild(track);
-
-        QDomElement instTrack = doc.createElement("instrumenttrack");
-        instTrack.setAttribute("vol", "100");
-        instTrack.setAttribute("pan", "0");
-        track.appendChild(instTrack);
-
-        QDomElement instrument = doc.createElement("instrument"); instrument.setAttribute("name", "xpressive");
-
-        QDomElement xpressive = doc.createElement("xpressive");
-        xpressive.setAttribute("W1", ch.w1); xpressive.setAttribute("W2", ""); xpressive.setAttribute("W3", "");
-        xpressive.setAttribute("O1", ch.o1); xpressive.setAttribute("O2", "");
-
-        xpressive.setAttribute("env_atk", QString::number(ch.attack)); xpressive.setAttribute("env_dec", QString::number(ch.decay));
-        xpressive.setAttribute("env_sus", QString::number(ch.sustain)); xpressive.setAttribute("env_rel", QString::number(ch.release));
-
-        QDomElement keyNode = doc.createElement("key");
-        xpressive.appendChild(keyNode);
-
-        instrument.appendChild(xpressive); instTrack.appendChild(instrument);
-
-        QDomElement eldata = doc.createElement("eldata");
-        QDomElement elvol = doc.createElement("elvol");
-        elvol.setAttribute("att", QString::number(ch.attack));
-        elvol.setAttribute("dec", QString::number(ch.decay));
-        elvol.setAttribute("sustain", QString::number(ch.sustain));
-        elvol.setAttribute("rel", QString::number(ch.release));
-
-        eldata.appendChild(elvol); instTrack.appendChild(eldata);
-
-        QDomElement pattern = doc.createElement("pattern");
-        pattern.setAttribute("type", "0");
-        pattern.setAttribute("pos", "0");
-        pattern.setAttribute("steps", "16");
-        track.appendChild(pattern);
-
-        for (int c = 0; c < NUM_STEPS; ++c) {
-            if (m_grid[r][c]->isChecked()) {
-                QDomElement note = doc.createElement("note");
-                note.setAttribute("pos", QString::number(c * ticksPerStep));
-                note.setAttribute("len", "12");
-                note.setAttribute("key", "60");
-                note.setAttribute("vol", QString::number(int(ch.vol * 100)));
-                pattern.appendChild(note);
-            }
-        }
-    }
-
-    for (int b = 0; b < 8; ++b) {
-        if (m_arrangerState[0][b] == 1) {
-            QDomElement bbtco = doc.createElement("bbtco");
-            bbtco.setAttribute("pos", QString::number(b * 16 * ticksPerStep));
-            bbtco.setAttribute("len", "192");
-            bbMasterTrack.appendChild(bbtco);
-        }
-    }
-
-    for (int m = 0; m < NUM_MELODIC; ++m) {
-        MelodicConfig& ch = m_melodic[m];
-        QDomElement track = doc.createElement("track"); track.setAttribute("name", ch.name); track.setAttribute("type", "0");
-        trackContainer.appendChild(track);
-
-        QDomElement instTrack = doc.createElement("instrumenttrack");
-        instTrack.setAttribute("vol", "100");
-        track.appendChild(instTrack);
-
-        QDomElement instrument = doc.createElement("instrument"); instrument.setAttribute("name", "xpressive");
-
-        QDomElement xpressive = doc.createElement("xpressive");
-        xpressive.setAttribute("W1", ch.w1); xpressive.setAttribute("W2", ch.w2); xpressive.setAttribute("W3", ch.w3);
-        xpressive.setAttribute("O1", ch.o1); xpressive.setAttribute("O2", ch.o2);
-
-        xpressive.setAttribute("env_atk", QString::number(ch.attack)); xpressive.setAttribute("env_dec", QString::number(ch.decay));
-        xpressive.setAttribute("env_sus", QString::number(ch.sustain)); xpressive.setAttribute("env_rel", QString::number(ch.release));
-
-        QDomElement keyNode = doc.createElement("key");
-        xpressive.appendChild(keyNode);
-
-        instrument.appendChild(xpressive); instTrack.appendChild(instrument);
-
-        QDomElement eldata = doc.createElement("eldata");
-        QDomElement elvol = doc.createElement("elvol");
-        elvol.setAttribute("att", QString::number(ch.attack));
-        elvol.setAttribute("dec", QString::number(ch.decay));
-        elvol.setAttribute("sustain", QString::number(ch.sustain));
-        elvol.setAttribute("rel", QString::number(ch.release));
-
-        eldata.appendChild(elvol); instTrack.appendChild(eldata);
-
-        for (int b = 0; b < 8; ++b) {
-            int patIdx = m_arrangerState[m+1][b];
-            if (patIdx == 0) continue;
-            int p = patIdx - 1;
-
-            bool hasNotes = false;
-            for (int key = 0; key < 96; ++key) { for (int c = 0; c < 16; ++c) { if (ch.grid[p][key][c].active) hasNotes = true; } }
-            if (!hasNotes) continue;
-
-            QDomElement pattern = doc.createElement("pattern");
-            pattern.setAttribute("type", "1");
-            pattern.setAttribute("pos", QString::number(b * 16 * ticksPerStep));
-            pattern.setAttribute("steps", "16");
-            pattern.setAttribute("len", QString::number(16 * ticksPerStep));
-            track.appendChild(pattern);
-
-            for (int key = 0; key < 96; ++key) {
-                for (int c = 0; c < 16; ++c) {
-                    if (ch.grid[p][key][c].active) {
-                        QDomElement note = doc.createElement("note");
-                        note.setAttribute("pos", QString::number(c * ticksPerStep));
-                        note.setAttribute("len", QString::number(ch.grid[p][key][c].length * ticksPerStep));
-                        note.setAttribute("key", QString::number(107 - key));
-                        note.setAttribute("vol", QString::number(int(ch.vol * 100)));
-                        pattern.appendChild(note);
-                    }
-                }
-            }
-        }
-    }
-
-    QFile file(filePath);
-    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QTextStream out(&file); out << doc.toString(4); file.close();
-        QMessageBox::information(this, "Export Complete", "Full project saved to:\n" + filePath);
-    }
+    QString filePath = QFileDialog::getSaveFileName(this, "Save LMMS Project", "", "LMMS Project (*.mmp)"); if (filePath.isEmpty()) return;
+    bool drumSteps[6][16];
+    for (int r = 0; r < 6; ++r) { for (int c = 0; c < 16; ++c) drumSteps[r][c] = m_grid[r][c]->isChecked(); }
+    if (ProjectIO::saveMmp(filePath, m_spinBpm->value(), m_channels, drumSteps, m_arrangerState, m_melodic)) QMessageBox::information(this, "Export Complete", "LMMS Project Saved Successfully!");
+    else QMessageBox::warning(this, "Error", "Failed to write file.");
 }

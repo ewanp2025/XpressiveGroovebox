@@ -26,6 +26,8 @@ qt_add_executable(XpressiveGroovebox
     pianoroll.h
     automation.cpp
     automation.h
+    projectio.cpp
+    projectio.h
 )
 
 target_link_libraries(XpressiveGroovebox PRIVATE Qt6::Widgets Qt6::Xml Qt6::Multimedia)
