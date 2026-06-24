@@ -1,0 +1,432 @@
+<?xml version="1.0"?>
+<lmms-project type="song" version="20">
+    <head bpm="120"/>
+    <song>
+        <trackcontainer type="song">
+            <track name="Beat/Bassline 0" type="1">
+                <bbtrack>
+                    <trackcontainer type="bbtrackcontainer">
+                        <track name="Kick" type="0">
+                            <instrumenttrack pan="0" vol="100">
+                                <instrument name="xpressive">
+                                    <xpressive A1="1" A2="1" A3="1" O1="(0.9*sinew(integrate(45*(1+2*exp(-t*80)))) * exp(-t*12))" O2="" PAN1="0" PAN2="-1" RELTRANS="50" W1="" W1sample="AA==" W2="" W2sample="AA==" W3="" W3sample="AA==" interpolateW1="0" interpolateW2="0" interpolateW3="0" smoothW1="0" smoothW2="0" smoothW3="0" version="0.1"/>
+                                </instrument>
+                                <eldata>
+                                    <elvol amt="1" att="0" dec="0.44" rel="0.86" sustain="0.33"/>
+                                </eldata>
+                            </instrumenttrack>
+                            <pattern pos="0" steps="16" type="0">
+                                <note key="60" len="12" pos="0" vol="100"/>
+                                <note key="60" len="12" pos="48" vol="100"/>
+                                <note key="60" len="12" pos="96" vol="100"/>
+                                <note key="60" len="12" pos="144" vol="100"/>
+                            </pattern>
+                        </track>
+                        <track name="Snare" type="0">
+                            <instrumenttrack pan="0" vol="80">
+                                <instrument name="xpressive">
+                                    <xpressive A1="1" A2="1" A3="1" O1="(0.15 * randv(t*srate) * exp(-t * (45 - 25*mod(floor(mod(t*(tempo/15),16)),2))))" O2="" PAN1="0" PAN2="-1" RELTRANS="50" W1="" W1sample="AA==" W2="" W2sample="AA==" W3="" W3sample="AA==" interpolateW1="0" interpolateW2="0" interpolateW3="0" smoothW1="0" smoothW2="0" smoothW3="0" version="0.1"/>
+                                </instrument>
+                                <eldata>
+                                    <elvol amt="1" att="0" dec="0.5" rel="0.1" sustain="0.5"/>
+                                </eldata>
+                            </instrumenttrack>
+                            <pattern pos="0" steps="16" type="0">
+                                <note key="60" len="12" pos="48" vol="80"/>
+                                <note key="60" len="12" pos="144" vol="80"/>
+                                <note key="60" len="12" pos="180" vol="80"/>
+                            </pattern>
+                        </track>
+                        <track name="CHat" type="0">
+                            <instrumenttrack pan="0" vol="50">
+                                <instrument name="xpressive">
+                                    <xpressive A1="1" A2="1" A3="1" O1="(0.15 * randv(t*srate) * exp(-t * (45 - 25*mod(floor(mod(t*(tempo/15),16)),2))))" O2="" PAN1="0" PAN2="-1" RELTRANS="50" W1="" W1sample="AA==" W2="" W2sample="AA==" W3="" W3sample="AA==" interpolateW1="0" interpolateW2="0" interpolateW3="0" smoothW1="0" smoothW2="0" smoothW3="0" version="0.1"/>
+                                </instrument>
+                                <eldata>
+                                    <elvol amt="1" att="0" dec="0.05" rel="0" sustain="0"/>
+                                </eldata>
+                            </instrumenttrack>
+                            <pattern pos="0" steps="16" type="0">
+                                <note key="60" len="12" pos="0" vol="50"/>
+                                <note key="60" len="12" pos="12" vol="50"/>
+                                <note key="60" len="12" pos="24" vol="50"/>
+                                <note key="60" len="12" pos="36" vol="50"/>
+                                <note key="60" len="12" pos="48" vol="50"/>
+                                <note key="60" len="12" pos="60" vol="50"/>
+                                <note key="60" len="12" pos="72" vol="50"/>
+                                <note key="60" len="12" pos="84" vol="50"/>
+                                <note key="60" len="12" pos="96" vol="50"/>
+                                <note key="60" len="12" pos="108" vol="50"/>
+                                <note key="60" len="12" pos="120" vol="50"/>
+                                <note key="60" len="12" pos="132" vol="50"/>
+                                <note key="60" len="12" pos="144" vol="50"/>
+                                <note key="60" len="12" pos="156" vol="50"/>
+                                <note key="60" len="12" pos="168" vol="50"/>
+                                <note key="60" len="12" pos="180" vol="50"/>
+                            </pattern>
+                        </track>
+                        <track name="OHat" type="0">
+                            <instrumenttrack pan="0" vol="60">
+                                <instrument name="xpressive">
+                                    <xpressive A1="1" A2="1" A3="1" O1="W1(integrate(f))" O2="" PAN1="0" PAN2="-1" RELTRANS="50" W1="randv(t*srate)" W1sample="AA==" W2="" W2sample="AA==" W3="" W3sample="AA==" interpolateW1="0" interpolateW2="0" interpolateW3="0" smoothW1="0" smoothW2="0" smoothW3="0" version="0.1"/>
+                                </instrument>
+                                <eldata>
+                                    <elvol amt="1" att="0" dec="0.3" rel="0" sustain="0"/>
+                                </eldata>
+                            </instrumenttrack>
+                            <pattern pos="0" steps="16" type="0"/>
+                        </track>
+                        <track name="Prc1" type="0">
+                            <instrumenttrack pan="0" vol="40">
+                                <instrument name="xpressive">
+                                    <xpressive A1="1" A2="1" A3="1" O1="W1(integrate(f)) * exp(-t*20)" O2="" PAN1="0" PAN2="-1" RELTRANS="50" W1="squarew(t)" W1sample="AA==" W2="" W2sample="AA==" W3="" W3sample="AA==" interpolateW1="0" interpolateW2="0" interpolateW3="0" smoothW1="0" smoothW2="0" smoothW3="0" version="0.1"/>
+                                </instrument>
+                                <eldata>
+                                    <elvol amt="1" att="0" dec="0.1" rel="0" sustain="1"/>
+                                </eldata>
+                            </instrumenttrack>
+                            <pattern pos="0" steps="16" type="0"/>
+                        </track>
+                        <track name="Prc2" type="0">
+                            <instrumenttrack pan="0" vol="60">
+                                <instrument name="xpressive">
+                                    <xpressive A1="1" A2="1" A3="1" O1="W1(integrate(f*0.5))" O2="" PAN1="0" PAN2="-1" RELTRANS="50" W1="saww(t)" W1sample="AA==" W2="" W2sample="AA==" W3="" W3sample="AA==" interpolateW1="0" interpolateW2="0" interpolateW3="0" smoothW1="0" smoothW2="0" smoothW3="0" version="0.1"/>
+                                </instrument>
+                                <eldata>
+                                    <elvol amt="1" att="0" dec="0.4" rel="0" sustain="0.5"/>
+                                </eldata>
+                            </instrumenttrack>
+                            <pattern pos="0" steps="16" type="0"/>
+                        </track>
+                    </trackcontainer>
+                </bbtrack>
+                <bbtco len="192" pos="0"/>
+                <bbtco len="192" pos="192"/>
+                <bbtco len="192" pos="384"/>
+                <bbtco len="192" pos="576"/>
+                <bbtco len="192" pos="768"/>
+                <bbtco len="192" pos="960"/>
+                <bbtco len="192" pos="1152"/>
+                <bbtco len="192" pos="1344"/>
+            </track>
+            <track name="Bass" type="0">
+                <instrumenttrack pan="0" vol="60">
+                    <instrument name="xpressive">
+                        <xpressive A1="1" A2="1" A3="1" O1="(W1(integrate(f)) + W2(integrate(f*1.005)))*0.5" O2="" PAN1="0" PAN2="-1" RELTRANS="50" W1="saww(t)" W1sample="AA==" W2="squarew(t)" W2sample="AA==" W3="" W3sample="AA==" interpolateW1="0" interpolateW2="0" interpolateW3="0" smoothW1="0" smoothW2="0" smoothW3="0" version="0.1"/>
+                    </instrument>
+                    <eldata>
+                        <elvol amt="1" att="0.05" dec="0.4" rel="0.2" sustain="0.1"/>
+                    </eldata>
+                </instrumenttrack>
+            </track>
+            <track name="Synth" type="0">
+                <instrumenttrack pan="0" vol="60">
+                    <instrument name="xpressive">
+                        <xpressive A1="1" A2="1" A3="1" O1="clamp(-1, W1(integrate(f) + 0.1 * W2(integrate(f))) * exp(-t * 12), 1)" O2="" PAN1="0" PAN2="-1" RELTRANS="50" W1="clamp(-1, saww(t) + 0.5 * squarew(t*2), 1)" W1sample="AA==" W2="0.3 * sinew(t*0.5) + 0.2 * randv(t*srate)" W2sample="AA==" W3="" W3sample="AA==" interpolateW1="0" interpolateW2="0" interpolateW3="0" smoothW1="0" smoothW2="0" smoothW3="0" version="0.1"/>
+                    </instrument>
+                    <eldata>
+                        <elvol amt="0" att="0.05" dec="0.8" rel="0.2" sustain="0.6"/>
+                    </eldata>
+                </instrumenttrack>
+                <pattern len="192" pos="0" steps="16" type="1">
+                    <note key="67" len="24" pos="0" vol="60"/>
+                    <note key="67" len="24" pos="36" vol="60"/>
+                    <note key="67" len="24" pos="60" vol="60"/>
+                    <note key="67" len="24" pos="84" vol="60"/>
+                    <note key="67" len="24" pos="120" vol="60"/>
+                    <note key="67" len="24" pos="156" vol="60"/>
+                    <note key="65" len="24" pos="84" vol="60"/>
+                    <note key="65" len="24" pos="120" vol="60"/>
+                    <note key="65" len="24" pos="156" vol="60"/>
+                    <note key="63" len="24" pos="0" vol="60"/>
+                    <note key="63" len="24" pos="36" vol="60"/>
+                    <note key="63" len="24" pos="60" vol="60"/>
+                    <note key="63" len="24" pos="84" vol="60"/>
+                    <note key="63" len="24" pos="120" vol="60"/>
+                    <note key="63" len="24" pos="156" vol="60"/>
+                    <note key="60" len="24" pos="0" vol="60"/>
+                    <note key="60" len="24" pos="36" vol="60"/>
+                    <note key="60" len="24" pos="60" vol="60"/>
+                    <note key="60" len="24" pos="84" vol="60"/>
+                    <note key="60" len="24" pos="120" vol="60"/>
+                    <note key="60" len="24" pos="156" vol="60"/>
+                    <note key="56" len="24" pos="0" vol="60"/>
+                    <note key="56" len="24" pos="36" vol="60"/>
+                    <note key="56" len="24" pos="60" vol="60"/>
+                    <note key="56" len="24" pos="84" vol="60"/>
+                    <note key="56" len="24" pos="120" vol="60"/>
+                    <note key="56" len="24" pos="156" vol="60"/>
+                    <note key="53" len="24" pos="0" vol="60"/>
+                    <note key="53" len="24" pos="36" vol="60"/>
+                    <note key="53" len="24" pos="60" vol="60"/>
+                </pattern>
+                <pattern len="192" pos="192" steps="16" type="1">
+                    <note key="68" len="24" pos="84" vol="60"/>
+                    <note key="68" len="24" pos="120" vol="60"/>
+                    <note key="68" len="24" pos="168" vol="60"/>
+                    <note key="67" len="24" pos="0" vol="60"/>
+                    <note key="67" len="24" pos="36" vol="60"/>
+                    <note key="67" len="12" pos="60" vol="60"/>
+                    <note key="65" len="24" pos="84" vol="60"/>
+                    <note key="65" len="24" pos="108" vol="60"/>
+                    <note key="65" len="24" pos="144" vol="60"/>
+                    <note key="65" len="24" pos="168" vol="60"/>
+                    <note key="63" len="24" pos="0" vol="60"/>
+                    <note key="63" len="24" pos="36" vol="60"/>
+                    <note key="63" len="12" pos="60" vol="60"/>
+                    <note key="61" len="24" pos="84" vol="60"/>
+                    <note key="61" len="24" pos="108" vol="60"/>
+                    <note key="61" len="24" pos="144" vol="60"/>
+                    <note key="61" len="24" pos="168" vol="60"/>
+                    <note key="60" len="24" pos="0" vol="60"/>
+                    <note key="60" len="24" pos="36" vol="60"/>
+                    <note key="60" len="12" pos="60" vol="60"/>
+                    <note key="58" len="24" pos="84" vol="60"/>
+                    <note key="58" len="24" pos="108" vol="60"/>
+                    <note key="58" len="24" pos="144" vol="60"/>
+                    <note key="58" len="24" pos="168" vol="60"/>
+                    <note key="56" len="24" pos="0" vol="60"/>
+                    <note key="56" len="24" pos="36" vol="60"/>
+                    <note key="56" len="12" pos="60" vol="60"/>
+                    <note key="56" len="24" pos="84" vol="60"/>
+                    <note key="56" len="24" pos="108" vol="60"/>
+                    <note key="56" len="24" pos="144" vol="60"/>
+                    <note key="56" len="24" pos="168" vol="60"/>
+                    <note key="53" len="24" pos="0" vol="60"/>
+                    <note key="53" len="24" pos="36" vol="60"/>
+                    <note key="53" len="12" pos="60" vol="60"/>
+                    <note key="51" len="24" pos="84" vol="60"/>
+                    <note key="51" len="24" pos="108" vol="60"/>
+                    <note key="51" len="24" pos="144" vol="60"/>
+                    <note key="51" len="24" pos="168" vol="60"/>
+                </pattern>
+                <pattern len="192" pos="384" steps="16" type="1">
+                    <note key="67" len="24" pos="0" vol="60"/>
+                    <note key="67" len="24" pos="36" vol="60"/>
+                    <note key="67" len="24" pos="60" vol="60"/>
+                    <note key="67" len="24" pos="84" vol="60"/>
+                    <note key="67" len="24" pos="120" vol="60"/>
+                    <note key="67" len="24" pos="156" vol="60"/>
+                    <note key="65" len="24" pos="84" vol="60"/>
+                    <note key="65" len="24" pos="120" vol="60"/>
+                    <note key="65" len="24" pos="156" vol="60"/>
+                    <note key="63" len="24" pos="0" vol="60"/>
+                    <note key="63" len="24" pos="36" vol="60"/>
+                    <note key="63" len="24" pos="60" vol="60"/>
+                    <note key="63" len="24" pos="84" vol="60"/>
+                    <note key="63" len="24" pos="120" vol="60"/>
+                    <note key="63" len="24" pos="156" vol="60"/>
+                    <note key="60" len="24" pos="0" vol="60"/>
+                    <note key="60" len="24" pos="36" vol="60"/>
+                    <note key="60" len="24" pos="60" vol="60"/>
+                    <note key="60" len="24" pos="84" vol="60"/>
+                    <note key="60" len="24" pos="120" vol="60"/>
+                    <note key="60" len="24" pos="156" vol="60"/>
+                    <note key="56" len="24" pos="0" vol="60"/>
+                    <note key="56" len="24" pos="36" vol="60"/>
+                    <note key="56" len="24" pos="60" vol="60"/>
+                    <note key="56" len="24" pos="84" vol="60"/>
+                    <note key="56" len="24" pos="120" vol="60"/>
+                    <note key="56" len="24" pos="156" vol="60"/>
+                    <note key="53" len="24" pos="0" vol="60"/>
+                    <note key="53" len="24" pos="36" vol="60"/>
+                    <note key="53" len="24" pos="60" vol="60"/>
+                </pattern>
+                <pattern len="192" pos="576" steps="16" type="1">
+                    <note key="68" len="24" pos="84" vol="60"/>
+                    <note key="68" len="24" pos="120" vol="60"/>
+                    <note key="68" len="24" pos="168" vol="60"/>
+                    <note key="67" len="24" pos="0" vol="60"/>
+                    <note key="67" len="24" pos="36" vol="60"/>
+                    <note key="67" len="12" pos="60" vol="60"/>
+                    <note key="65" len="24" pos="84" vol="60"/>
+                    <note key="65" len="24" pos="108" vol="60"/>
+                    <note key="65" len="24" pos="144" vol="60"/>
+                    <note key="65" len="24" pos="168" vol="60"/>
+                    <note key="63" len="24" pos="0" vol="60"/>
+                    <note key="63" len="24" pos="36" vol="60"/>
+                    <note key="63" len="12" pos="60" vol="60"/>
+                    <note key="61" len="24" pos="84" vol="60"/>
+                    <note key="61" len="24" pos="108" vol="60"/>
+                    <note key="61" len="24" pos="144" vol="60"/>
+                    <note key="61" len="24" pos="168" vol="60"/>
+                    <note key="60" len="24" pos="0" vol="60"/>
+                    <note key="60" len="24" pos="36" vol="60"/>
+                    <note key="60" len="12" pos="60" vol="60"/>
+                    <note key="58" len="24" pos="84" vol="60"/>
+                    <note key="58" len="24" pos="108" vol="60"/>
+                    <note key="58" len="24" pos="144" vol="60"/>
+                    <note key="58" len="24" pos="168" vol="60"/>
+                    <note key="56" len="24" pos="0" vol="60"/>
+                    <note key="56" len="24" pos="36" vol="60"/>
+                    <note key="56" len="12" pos="60" vol="60"/>
+                    <note key="56" len="24" pos="84" vol="60"/>
+                    <note key="56" len="24" pos="108" vol="60"/>
+                    <note key="56" len="24" pos="144" vol="60"/>
+                    <note key="56" len="24" pos="168" vol="60"/>
+                    <note key="53" len="24" pos="0" vol="60"/>
+                    <note key="53" len="24" pos="36" vol="60"/>
+                    <note key="53" len="12" pos="60" vol="60"/>
+                    <note key="51" len="24" pos="84" vol="60"/>
+                    <note key="51" len="24" pos="108" vol="60"/>
+                    <note key="51" len="24" pos="144" vol="60"/>
+                    <note key="51" len="24" pos="168" vol="60"/>
+                </pattern>
+                <pattern len="192" pos="768" steps="16" type="1">
+                    <note key="67" len="24" pos="0" vol="60"/>
+                    <note key="67" len="24" pos="36" vol="60"/>
+                    <note key="67" len="24" pos="60" vol="60"/>
+                    <note key="67" len="24" pos="84" vol="60"/>
+                    <note key="67" len="24" pos="120" vol="60"/>
+                    <note key="67" len="24" pos="156" vol="60"/>
+                    <note key="65" len="24" pos="84" vol="60"/>
+                    <note key="65" len="24" pos="120" vol="60"/>
+                    <note key="65" len="24" pos="156" vol="60"/>
+                    <note key="63" len="24" pos="0" vol="60"/>
+                    <note key="63" len="24" pos="36" vol="60"/>
+                    <note key="63" len="24" pos="60" vol="60"/>
+                    <note key="63" len="24" pos="84" vol="60"/>
+                    <note key="63" len="24" pos="120" vol="60"/>
+                    <note key="63" len="24" pos="156" vol="60"/>
+                    <note key="60" len="24" pos="0" vol="60"/>
+                    <note key="60" len="24" pos="36" vol="60"/>
+                    <note key="60" len="24" pos="60" vol="60"/>
+                    <note key="60" len="24" pos="84" vol="60"/>
+                    <note key="60" len="24" pos="120" vol="60"/>
+                    <note key="60" len="24" pos="156" vol="60"/>
+                    <note key="56" len="24" pos="0" vol="60"/>
+                    <note key="56" len="24" pos="36" vol="60"/>
+                    <note key="56" len="24" pos="60" vol="60"/>
+                    <note key="56" len="24" pos="84" vol="60"/>
+                    <note key="56" len="24" pos="120" vol="60"/>
+                    <note key="56" len="24" pos="156" vol="60"/>
+                    <note key="53" len="24" pos="0" vol="60"/>
+                    <note key="53" len="24" pos="36" vol="60"/>
+                    <note key="53" len="24" pos="60" vol="60"/>
+                </pattern>
+                <pattern len="192" pos="960" steps="16" type="1">
+                    <note key="68" len="24" pos="84" vol="60"/>
+                    <note key="68" len="24" pos="120" vol="60"/>
+                    <note key="68" len="24" pos="168" vol="60"/>
+                    <note key="67" len="24" pos="0" vol="60"/>
+                    <note key="67" len="24" pos="36" vol="60"/>
+                    <note key="67" len="12" pos="60" vol="60"/>
+                    <note key="65" len="24" pos="84" vol="60"/>
+                    <note key="65" len="24" pos="108" vol="60"/>
+                    <note key="65" len="24" pos="144" vol="60"/>
+                    <note key="65" len="24" pos="168" vol="60"/>
+                    <note key="63" len="24" pos="0" vol="60"/>
+                    <note key="63" len="24" pos="36" vol="60"/>
+                    <note key="63" len="12" pos="60" vol="60"/>
+                    <note key="61" len="24" pos="84" vol="60"/>
+                    <note key="61" len="24" pos="108" vol="60"/>
+                    <note key="61" len="24" pos="144" vol="60"/>
+                    <note key="61" len="24" pos="168" vol="60"/>
+                    <note key="60" len="24" pos="0" vol="60"/>
+                    <note key="60" len="24" pos="36" vol="60"/>
+                    <note key="60" len="12" pos="60" vol="60"/>
+                    <note key="58" len="24" pos="84" vol="60"/>
+                    <note key="58" len="24" pos="108" vol="60"/>
+                    <note key="58" len="24" pos="144" vol="60"/>
+                    <note key="58" len="24" pos="168" vol="60"/>
+                    <note key="56" len="24" pos="0" vol="60"/>
+                    <note key="56" len="24" pos="36" vol="60"/>
+                    <note key="56" len="12" pos="60" vol="60"/>
+                    <note key="56" len="24" pos="84" vol="60"/>
+                    <note key="56" len="24" pos="108" vol="60"/>
+                    <note key="56" len="24" pos="144" vol="60"/>
+                    <note key="56" len="24" pos="168" vol="60"/>
+                    <note key="53" len="24" pos="0" vol="60"/>
+                    <note key="53" len="24" pos="36" vol="60"/>
+                    <note key="53" len="12" pos="60" vol="60"/>
+                    <note key="51" len="24" pos="84" vol="60"/>
+                    <note key="51" len="24" pos="108" vol="60"/>
+                    <note key="51" len="24" pos="144" vol="60"/>
+                    <note key="51" len="24" pos="168" vol="60"/>
+                </pattern>
+                <pattern len="192" pos="1152" steps="16" type="1">
+                    <note key="67" len="24" pos="0" vol="60"/>
+                    <note key="67" len="24" pos="36" vol="60"/>
+                    <note key="67" len="24" pos="60" vol="60"/>
+                    <note key="67" len="24" pos="84" vol="60"/>
+                    <note key="67" len="24" pos="120" vol="60"/>
+                    <note key="67" len="24" pos="156" vol="60"/>
+                    <note key="65" len="24" pos="84" vol="60"/>
+                    <note key="65" len="24" pos="120" vol="60"/>
+                    <note key="65" len="24" pos="156" vol="60"/>
+                    <note key="63" len="24" pos="0" vol="60"/>
+                    <note key="63" len="24" pos="36" vol="60"/>
+                    <note key="63" len="24" pos="60" vol="60"/>
+                    <note key="63" len="24" pos="84" vol="60"/>
+                    <note key="63" len="24" pos="120" vol="60"/>
+                    <note key="63" len="24" pos="156" vol="60"/>
+                    <note key="60" len="24" pos="0" vol="60"/>
+                    <note key="60" len="24" pos="36" vol="60"/>
+                    <note key="60" len="24" pos="60" vol="60"/>
+                    <note key="60" len="24" pos="84" vol="60"/>
+                    <note key="60" len="24" pos="120" vol="60"/>
+                    <note key="60" len="24" pos="156" vol="60"/>
+                    <note key="56" len="24" pos="0" vol="60"/>
+                    <note key="56" len="24" pos="36" vol="60"/>
+                    <note key="56" len="24" pos="60" vol="60"/>
+                    <note key="56" len="24" pos="84" vol="60"/>
+                    <note key="56" len="24" pos="120" vol="60"/>
+                    <note key="56" len="24" pos="156" vol="60"/>
+                    <note key="53" len="24" pos="0" vol="60"/>
+                    <note key="53" len="24" pos="36" vol="60"/>
+                    <note key="53" len="24" pos="60" vol="60"/>
+                </pattern>
+                <pattern len="192" pos="1344" steps="16" type="1">
+                    <note key="68" len="24" pos="84" vol="60"/>
+                    <note key="68" len="24" pos="120" vol="60"/>
+                    <note key="68" len="24" pos="168" vol="60"/>
+                    <note key="67" len="24" pos="0" vol="60"/>
+                    <note key="67" len="24" pos="36" vol="60"/>
+                    <note key="67" len="12" pos="60" vol="60"/>
+                    <note key="65" len="24" pos="84" vol="60"/>
+                    <note key="65" len="24" pos="108" vol="60"/>
+                    <note key="65" len="24" pos="144" vol="60"/>
+                    <note key="65" len="24" pos="168" vol="60"/>
+                    <note key="63" len="24" pos="0" vol="60"/>
+                    <note key="63" len="24" pos="36" vol="60"/>
+                    <note key="63" len="12" pos="60" vol="60"/>
+                    <note key="61" len="24" pos="84" vol="60"/>
+                    <note key="61" len="24" pos="108" vol="60"/>
+                    <note key="61" len="24" pos="144" vol="60"/>
+                    <note key="61" len="24" pos="168" vol="60"/>
+                    <note key="60" len="24" pos="0" vol="60"/>
+                    <note key="60" len="24" pos="36" vol="60"/>
+                    <note key="60" len="12" pos="60" vol="60"/>
+                    <note key="58" len="24" pos="84" vol="60"/>
+                    <note key="58" len="24" pos="108" vol="60"/>
+                    <note key="58" len="24" pos="144" vol="60"/>
+                    <note key="58" len="24" pos="168" vol="60"/>
+                    <note key="56" len="24" pos="0" vol="60"/>
+                    <note key="56" len="24" pos="36" vol="60"/>
+                    <note key="56" len="12" pos="60" vol="60"/>
+                    <note key="56" len="24" pos="84" vol="60"/>
+                    <note key="56" len="24" pos="108" vol="60"/>
+                    <note key="56" len="24" pos="144" vol="60"/>
+                    <note key="56" len="24" pos="168" vol="60"/>
+                    <note key="53" len="24" pos="0" vol="60"/>
+                    <note key="53" len="24" pos="36" vol="60"/>
+                    <note key="53" len="12" pos="60" vol="60"/>
+                    <note key="51" len="24" pos="84" vol="60"/>
+                    <note key="51" len="24" pos="108" vol="60"/>
+                    <note key="51" len="24" pos="144" vol="60"/>
+                    <note key="51" len="24" pos="168" vol="60"/>
+                </pattern>
+            </track>
+            <track name="Pad" type="0">
+                <instrumenttrack pan="0" vol="60">
+                    <instrument name="xpressive">
+                        <xpressive A1="1" A2="1" A3="1" O1="(W1(integrate(f*0.99)) + W2(integrate(f*1.01)))*0.5" O2="" PAN1="0" PAN2="-1" RELTRANS="50" W1="saww(t)" W1sample="AA==" W2="saww(t)" W2sample="AA==" W3="" W3sample="AA==" interpolateW1="0" interpolateW2="0" interpolateW3="0" smoothW1="0" smoothW2="0" smoothW3="0" version="0.1"/>
+                    </instrument>
+                    <eldata>
+                        <elvol amt="1" att="0.5" dec="1" rel="1" sustain="0.8"/>
+                    </eldata>
+                </instrumenttrack>
+            </track>
+        </trackcontainer>
+    </song>
+</lmms-project>
